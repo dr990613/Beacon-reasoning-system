@@ -1,0 +1,536 @@
+{
+  "local_beacons": {
+    "calculate_housing_fund": [
+      {
+        "func": "<module>",
+        "line": 20,
+        "code": "FUND_BASE_LOW = Decimal(\"2420\")  # Minimum housing fund contribution base"
+      },
+      {
+        "func": "<module>",
+        "line": 21,
+        "code": "FUND_BASE_HIGH = Decimal(\"31884\")  # Maximum housing fund contribution base"
+      },
+      {
+        "func": "<module>",
+        "line": 33,
+        "code": "FUND_RATIO = Decimal(\"0.12\")"
+      },
+      {
+        "func": "calculate_housing_fund",
+        "line": 122,
+        "code": "    fund_base = max(FUND_BASE_LOW, min(salary, FUND_BASE_HIGH))"
+      },
+      {
+        "func": "calculate_housing_fund",
+        "line": 123,
+        "code": "    housing_fund = (fund_base * FUND_RATIO).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP)"
+      },
+      {
+        "func": "calculate_housing_fund",
+        "line": 124,
+        "code": "    return housing_fund"
+      }
+    ],
+    "main": [
+      {
+        "func": "main",
+        "line": 235,
+        "code": "    INPUT_FILE = \"salary_data.xlsx\"  # Input Excel file"
+      },
+      {
+        "func": "main",
+        "line": 240,
+        "code": "        print(\"Loading salary data...\")"
+      },
+      {
+        "func": "main",
+        "line": 241,
+        "code": "        salary_df = load_salary_data(INPUT_FILE)"
+      },
+      {
+        "func": "main",
+        "line": 244,
+        "code": "        print(\"Calculating salary data in batch...\")"
+      },
+      {
+        "func": "main",
+        "line": 245,
+        "code": "        result_df = batch_calculate_salary(salary_df)"
+      },
+      {
+        "func": "main",
+        "line": 248,
+        "code": "        print(\"Saving calculation results...\")"
+      },
+      {
+        "func": "main",
+        "line": 252,
+        "code": "        print(\"\\nCalculation Results Preview:\")"
+      },
+      {
+        "func": "main",
+        "line": 253,
+        "code": "        print(result_df[[\"salary\", \"social_total\", \"housing_fund\", \"personal_tax\", \"after_tax_salary\"]].head(10))"
+      },
+      {
+        "func": "main",
+        "line": 256,
+        "code": "        print(f\"Program execution failed: {str(e)}\")"
+      }
+    ],
+    "calculate_social_insurance": [
+      {
+        "func": "<module>",
+        "line": 17,
+        "code": "SOCIAL_BASE_LOW = Decimal(\"6326\")  # Minimum social insurance contribution base"
+      },
+      {
+        "func": "<module>",
+        "line": 18,
+        "code": "SOCIAL_BASE_HIGH = Decimal(\"31884\")  # Maximum social insurance contribution base"
+      },
+      {
+        "func": "<module>",
+        "line": 24,
+        "code": "SOCIAL_RATIO = {"
+      },
+      {
+        "func": "<module>",
+        "line": 25,
+        "code": "    \"pension\": Decimal(\"0.08\"),  # Pension insurance: 8%"
+      },
+      {
+        "func": "<module>",
+        "line": 26,
+        "code": "    \"medical\": Decimal(\"0.02\"),  # Medical insurance: 2%"
+      },
+      {
+        "func": "<module>",
+        "line": 27,
+        "code": "    \"unemployment\": Decimal(\"0.005\"),  # Unemployment insurance: 0.5%"
+      },
+      {
+        "func": "<module>",
+        "line": 28,
+        "code": "    \"injury\": Decimal(\"0\"),  # Work injury insurance: 0% (employer-only)"
+      },
+      {
+        "func": "<module>",
+        "line": 29,
+        "code": "    \"maternity\": Decimal(\"0\")  # Maternity insurance: 0% (employer-only)"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 91,
+        "code": "    social_base = max(SOCIAL_BASE_LOW, min(salary, SOCIAL_BASE_HIGH))"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 94,
+        "code": "    social_insurance = {"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 95,
+        "code": "        \"pension\": (social_base * SOCIAL_RATIO[\"pension\"]).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP),"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 96,
+        "code": "        \"medical\": (social_base * SOCIAL_RATIO[\"medical\"]).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP),"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 97,
+        "code": "        \"unemployment\": (social_base * SOCIAL_RATIO[\"unemployment\"]).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP),"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 98,
+        "code": "        \"injury\": Decimal(\"0.00\"),"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 99,
+        "code": "        \"maternity\": Decimal(\"0.00\"),"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 100,
+        "code": "        \"total\": Decimal(\"0.00\")"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 104,
+        "code": "    social_insurance[\"total\"] = sum(["
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 105,
+        "code": "        social_insurance[\"pension\"],"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 106,
+        "code": "        social_insurance[\"medical\"],"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 107,
+        "code": "        social_insurance[\"unemployment\"],"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 108,
+        "code": "        social_insurance[\"injury\"],"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 109,
+        "code": "        social_insurance[\"maternity\"]"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 110,
+        "code": "    ]).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP)"
+      },
+      {
+        "func": "calculate_social_insurance",
+        "line": 112,
+        "code": "    return social_insurance"
+      }
+    ],
+    "batch_calculate_salary": [
+      {
+        "func": "batch_calculate_salary",
+        "line": 199,
+        "code": "    results = df[\"salary_decimal\"].apply(calculate_after_tax_salary)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 202,
+        "code": "    result_df = pd.json_normalize(results)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 205,
+        "code": "    final_df = pd.concat([df, result_df], axis=1)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 208,
+        "code": "    final_df = final_df.drop(columns=[\"salary_decimal\"], errors=\"ignore\")"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 210,
+        "code": "    return final_df"
+      }
+    ],
+    "calculate_taxable_income": [
+      {
+        "func": "<module>",
+        "line": 36,
+        "code": "TAX_THRESHOLD = Decimal(\"5000\")"
+      },
+      {
+        "func": "calculate_taxable_income",
+        "line": 136,
+        "code": "    taxable_income = salary - social_total - housing_fund - TAX_THRESHOLD"
+      },
+      {
+        "func": "calculate_taxable_income",
+        "line": 137,
+        "code": "    return max(taxable_income, Decimal(\"0.00\"))"
+      }
+    ],
+    "save_result_to_excel": [
+      {
+        "func": "save_result_to_excel",
+        "line": 228,
+        "code": "    print(f\"Calculation results saved to: {output_path}\")"
+      }
+    ],
+    "calculate_personal_tax": [
+      {
+        "func": "calculate_personal_tax",
+        "line": 147,
+        "code": "        return Decimal(\"0.00\")"
+      },
+      {
+        "func": "calculate_personal_tax",
+        "line": 152,
+        "code": "            tax = (taxable_income * rate - deduction).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP)"
+      },
+      {
+        "func": "calculate_personal_tax",
+        "line": 153,
+        "code": "            return max(tax, Decimal(\"0.00\"))"
+      },
+      {
+        "func": "calculate_personal_tax",
+        "line": 157,
+        "code": "    tax = (taxable_income * rate - deduction).quantize(Decimal(\"0.00\"), rounding=ROUND_HALF_UP)"
+      },
+      {
+        "func": "calculate_personal_tax",
+        "line": 158,
+        "code": "    return max(tax, Decimal(\"0.00\"))"
+      }
+    ],
+    "load_salary_data": [
+      {
+        "func": "load_salary_data",
+        "line": 65,
+        "code": "    df = pd.read_excel(file_path, sheet_name=sheet_name, engine=\"openpyxl\")"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 72,
+        "code": "    df[\"salary\"] = pd.to_numeric(df[\"salary\"], errors=\"coerce\")"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 80,
+        "code": "    df[\"salary_decimal\"] = df[\"salary\"].apply(lambda x: Decimal(str(x)))"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 81,
+        "code": "    return df"
+      }
+    ],
+    "<module>": [],
+    "calculate_after_tax_salary": [
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 168,
+        "code": "    social = calculate_social_insurance(salary)"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 170,
+        "code": "    housing_fund = calculate_housing_fund(salary)"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 172,
+        "code": "    taxable_income = calculate_taxable_income(salary, social[\"total\"], housing_fund)"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 174,
+        "code": "    personal_tax = calculate_personal_tax(taxable_income)"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 176,
+        "code": "    after_tax = (salary - social[\"total\"] - housing_fund - personal_tax).quantize(Decimal(\"0.00\"),"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 177,
+        "code": "                                                                                  rounding=ROUND_HALF_UP)"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 179,
+        "code": "    return {"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 180,
+        "code": "        \"pre_tax_salary\": salary,  # Pre-tax salary"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 181,
+        "code": "        \"pension\": social[\"pension\"],  # Pension insurance contribution"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 182,
+        "code": "        \"medical\": social[\"medical\"],  # Medical insurance contribution"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 183,
+        "code": "        \"unemployment\": social[\"unemployment\"],  # Unemployment insurance contribution"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 184,
+        "code": "        \"social_total\": social[\"total\"],  # Total social insurance contributions"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 185,
+        "code": "        \"housing_fund\": housing_fund,  # Housing fund contribution"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 186,
+        "code": "        \"taxable_income\": taxable_income,  # Taxable income"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 187,
+        "code": "        \"personal_tax\": personal_tax,  # Personal income tax"
+      },
+      {
+        "func": "calculate_after_tax_salary",
+        "line": 188,
+        "code": "        \"after_tax_salary\": after_tax  # After-tax salary"
+      }
+    ]
+  },
+  "program_beacons": {
+    "main": [
+      {
+        "func": "load_salary_data",
+        "line": 65,
+        "code": "    df = pd.read_excel(file_path, sheet_name=sheet_name, engine=\"openpyxl\")"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 72,
+        "code": "    df[\"salary\"] = pd.to_numeric(df[\"salary\"], errors=\"coerce\")"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 80,
+        "code": "    df[\"salary_decimal\"] = df[\"salary\"].apply(lambda x: Decimal(str(x)))"
+      },
+      {
+        "func": "load_salary_data",
+        "line": 81,
+        "code": "    return df"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 199,
+        "code": "    results = df[\"salary_decimal\"].apply(calculate_after_tax_salary)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 202,
+        "code": "    result_df = pd.json_normalize(results)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 205,
+        "code": "    final_df = pd.concat([df, result_df], axis=1)"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 208,
+        "code": "    final_df = final_df.drop(columns=[\"salary_decimal\"], errors=\"ignore\")"
+      },
+      {
+        "func": "batch_calculate_salary",
+        "line": 210,
+        "code": "    return final_df"
+      },
+      {
+        "func": "save_result_to_excel",
+        "line": 228,
+        "code": "    print(f\"Calculation results saved to: {output_path}\")"
+      },
+      {
+        "func": "main",
+        "line": 235,
+        "code": "    INPUT_FILE = \"salary_data.xlsx\"  # Input Excel file"
+      },
+      {
+        "func": "main",
+        "line": 240,
+        "code": "        print(\"Loading salary data...\")"
+      },
+      {
+        "func": "main",
+        "line": 241,
+        "code": "        salary_df = load_salary_data(INPUT_FILE)"
+      },
+      {
+        "func": "main",
+        "line": 244,
+        "code": "        print(\"Calculating salary data in batch...\")"
+      },
+      {
+        "func": "main",
+        "line": 245,
+        "code": "        result_df = batch_calculate_salary(salary_df)"
+      },
+      {
+        "func": "main",
+        "line": 248,
+        "code": "        print(\"Saving calculation results...\")"
+      },
+      {
+        "func": "main",
+        "line": 252,
+        "code": "        print(\"\\nCalculation Results Preview:\")"
+      },
+      {
+        "func": "main",
+        "line": 253,
+        "code": "        print(result_df[[\"salary\", \"social_total\", \"housing_fund\", \"personal_tax\", \"after_tax_salary\"]].head(10))"
+      },
+      {
+        "func": "main",
+        "line": 256,
+        "code": "        print(f\"Program execution failed: {str(e)}\")"
+      }
+    ]
+  },
+  "call_graph": {
+    "<module>": [
+      "Decimal",
+      "main"
+    ],
+    "load_salary_data": [
+      "Decimal",
+      "FileNotFoundError",
+      "KeyError",
+      "ValueError",
+      "str"
+    ],
+    "calculate_social_insurance": [
+      "Decimal",
+      "max",
+      "min",
+      "sum"
+    ],
+    "calculate_housing_fund": [
+      "Decimal",
+      "max",
+      "min"
+    ],
+    "calculate_taxable_income": [
+      "Decimal",
+      "max"
+    ],
+    "calculate_personal_tax": [
+      "Decimal",
+      "max"
+    ],
+    "calculate_after_tax_salary": [
+      "Decimal",
+      "calculate_housing_fund",
+      "calculate_personal_tax",
+      "calculate_social_insurance",
+      "calculate_taxable_income"
+    ],
+    "save_result_to_excel": [
+      "print"
+    ],
+    "main": [
+      "batch_calculate_salary",
+      "load_salary_data",
+      "print",
+      "save_result_to_excel",
+      "str"
+    ]
+  }
+}
