@@ -1,0 +1,6 @@
+adapter: localrepo
+output:
+  run_dir: outputs/runs/default
+memory:
+  project: outputs/runs/default/project_memory.jsonl
+  experience: outputs/runs/default/experience_memory.jsonl
