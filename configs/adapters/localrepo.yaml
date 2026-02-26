@@ -1,0 +1,3 @@
+name: localrepo
+runtime:
+  command: pytest -q
