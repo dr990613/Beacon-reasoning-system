@@ -1,0 +1,38 @@
+# configs/default.yaml
+# Minimal config with fixed structure.
+# Rule: env can override model.* only; CLI can override run.* only.
+
+run:
+  seed: 0
+  max_rounds: 2
+  use_verifier: true
+  outputs_dir: ${env:OUTPUTS_DIR,outputs/runs}
+
+reader:
+  enable_global: true
+  validation_filter: true
+  max_local_nodes: 400
+  max_global_inline: null
+
+model:
+  # Defaults are also defined in llm/config.py; keep same values here for clarity.
+  base_url: ${env:LITELLM_BASE_URL,http://a6k2.dgx:34000/v1}
+  api_key: ${env:LITELLM_API_KEY,}
+  model_name: ${env:MODEL_NAME,qwen3-32b}
+  timeout_s: 120
+  params:
+    temperature: 0.2
+    top_p: 0.95
+    max_tokens: 2048
+
+adapter:
+  name: localrepo
+  params:
+    repo_root: .
+    # Fill these for localrepo smoke:
+    target_file: path/to/your_module.py
+    target_qualname: your_function_or_Class.method
+    spec: ""
+    # Optional runtime config:
+    run_cmd: "pytest -q"
+    work_dir: null

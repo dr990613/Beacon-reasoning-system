@@ -1,0 +1,329 @@
+{
+  "local_beacons": {
+    "get_summary": [
+      {
+        "func": "get_summary",
+        "line": 76,
+        "code": "        total_paid = sum(p.monthly_payment for p in schedule)"
+      },
+      {
+        "func": "get_summary",
+        "line": 77,
+        "code": "        return {"
+      },
+      {
+        "func": "get_summary",
+        "line": 78,
+        "code": "            \"loan_amount\": self.loan_amount,"
+      },
+      {
+        "func": "get_summary",
+        "line": 79,
+        "code": "            \"annual_rate_pct\": self.annual_rate * 100,"
+      },
+      {
+        "func": "get_summary",
+        "line": 80,
+        "code": "            \"original_term_months\": self.total_months,"
+      },
+      {
+        "func": "get_summary",
+        "line": 81,
+        "code": "            \"actual_term_months\": len(schedule),"
+      },
+      {
+        "func": "get_summary",
+        "line": 82,
+        "code": "            \"total_paid\": round(total_paid, 2),"
+      },
+      {
+        "func": "get_summary",
+        "line": 83,
+        "code": "            \"total_interest\": round(total_paid - self.loan_amount, 2),"
+      }
+    ],
+    "_calculate_monthly_payment": [
+      {
+        "func": "_calculate_monthly_payment",
+        "line": 30,
+        "code": "        r = self.monthly_rate"
+      },
+      {
+        "func": "_calculate_monthly_payment",
+        "line": 31,
+        "code": "        n = self.total_months"
+      },
+      {
+        "func": "_calculate_monthly_payment",
+        "line": 33,
+        "code": "            return self.loan_amount / n"
+      },
+      {
+        "func": "_calculate_monthly_payment",
+        "line": 34,
+        "code": "        return self.loan_amount * (r * (1 + r) ** n) / ((1 + r) ** n - 1)"
+      }
+    ],
+    "generate_schedule": [
+      {
+        "func": "generate_schedule",
+        "line": 42,
+        "code": "        schedule = []"
+      },
+      {
+        "func": "generate_schedule",
+        "line": 73,
+        "code": "        return schedule"
+      }
+    ],
+    "<module>": [],
+    "main": [
+      {
+        "func": "main",
+        "line": 112,
+        "code": "    args = parse_arguments()"
+      },
+      {
+        "func": "main",
+        "line": 114,
+        "code": "    prepayment = None"
+      },
+      {
+        "func": "main",
+        "line": 116,
+        "code": "        prepayment = {\"month\": args.prepay_month, \"amount\": args.prepay_amount}"
+      },
+      {
+        "func": "main",
+        "line": 118,
+        "code": "    calc = MortgageCalculator("
+      },
+      {
+        "func": "main",
+        "line": 119,
+        "code": "        loan_amount=args.loan,"
+      },
+      {
+        "func": "main",
+        "line": 120,
+        "code": "        annual_rate_pct=args.rate,"
+      },
+      {
+        "func": "main",
+        "line": 121,
+        "code": "        years=args.years"
+      },
+      {
+        "func": "main",
+        "line": 124,
+        "code": "    schedule = calc.generate_schedule(prepayment)"
+      },
+      {
+        "func": "main",
+        "line": 125,
+        "code": "    summary = calc.get_summary(schedule)"
+      },
+      {
+        "func": "main",
+        "line": 128,
+        "code": "    print(\"Mortgage Summary:\")"
+      },
+      {
+        "func": "main",
+        "line": 129,
+        "code": "    print(f\"  Loan Amount:       {summary['loan_amount']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 130,
+        "code": "    print(f\"  Annual Rate:       {summary['annual_rate_pct']:.2f}%\")"
+      },
+      {
+        "func": "main",
+        "line": 131,
+        "code": "    print(f\"  Original Term:     {summary['original_term_months']} months ({args.years} years)\")"
+      },
+      {
+        "func": "main",
+        "line": 132,
+        "code": "    print(f\"  Actual Term:       {summary['actual_term_months']} months\")"
+      },
+      {
+        "func": "main",
+        "line": 133,
+        "code": "    print(f\"  Total Paid:        {summary['total_paid']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 134,
+        "code": "    print(f\"  Total Interest:    {summary['total_interest']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 137,
+        "code": "        saved = summary[\"original_term_months\"] - summary[\"actual_term_months\"]"
+      },
+      {
+        "func": "main",
+        "line": 138,
+        "code": "        print(f\"  Months Saved:      {saved}\")"
+      },
+      {
+        "func": "main",
+        "line": 141,
+        "code": "    print(f\"\\n✅ Amortization schedule saved to: {args.output}\")"
+      }
+    ],
+    "parse_arguments": [
+      {
+        "func": "parse_arguments",
+        "line": 101,
+        "code": "    parser = argparse.ArgumentParser(description=\"Mortgage Calculator (Equal Principal & Interest)\")"
+      },
+      {
+        "func": "parse_arguments",
+        "line": 108,
+        "code": "    return parser.parse_args()"
+      }
+    ],
+    "export_to_csv": [],
+    "__init__": []
+  },
+  "program_beacons": {
+    "main": [
+      {
+        "func": "parse_arguments",
+        "line": 101,
+        "code": "    parser = argparse.ArgumentParser(description=\"Mortgage Calculator (Equal Principal & Interest)\")"
+      },
+      {
+        "func": "parse_arguments",
+        "line": 108,
+        "code": "    return parser.parse_args()"
+      },
+      {
+        "func": "main",
+        "line": 112,
+        "code": "    args = parse_arguments()"
+      },
+      {
+        "func": "main",
+        "line": 114,
+        "code": "    prepayment = None"
+      },
+      {
+        "func": "main",
+        "line": 116,
+        "code": "        prepayment = {\"month\": args.prepay_month, \"amount\": args.prepay_amount}"
+      },
+      {
+        "func": "main",
+        "line": 118,
+        "code": "    calc = MortgageCalculator("
+      },
+      {
+        "func": "main",
+        "line": 119,
+        "code": "        loan_amount=args.loan,"
+      },
+      {
+        "func": "main",
+        "line": 120,
+        "code": "        annual_rate_pct=args.rate,"
+      },
+      {
+        "func": "main",
+        "line": 121,
+        "code": "        years=args.years"
+      },
+      {
+        "func": "main",
+        "line": 124,
+        "code": "    schedule = calc.generate_schedule(prepayment)"
+      },
+      {
+        "func": "main",
+        "line": 125,
+        "code": "    summary = calc.get_summary(schedule)"
+      },
+      {
+        "func": "main",
+        "line": 128,
+        "code": "    print(\"Mortgage Summary:\")"
+      },
+      {
+        "func": "main",
+        "line": 129,
+        "code": "    print(f\"  Loan Amount:       {summary['loan_amount']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 130,
+        "code": "    print(f\"  Annual Rate:       {summary['annual_rate_pct']:.2f}%\")"
+      },
+      {
+        "func": "main",
+        "line": 131,
+        "code": "    print(f\"  Original Term:     {summary['original_term_months']} months ({args.years} years)\")"
+      },
+      {
+        "func": "main",
+        "line": 132,
+        "code": "    print(f\"  Actual Term:       {summary['actual_term_months']} months\")"
+      },
+      {
+        "func": "main",
+        "line": 133,
+        "code": "    print(f\"  Total Paid:        {summary['total_paid']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 134,
+        "code": "    print(f\"  Total Interest:    {summary['total_interest']:,.2f}\")"
+      },
+      {
+        "func": "main",
+        "line": 137,
+        "code": "        saved = summary[\"original_term_months\"] - summary[\"actual_term_months\"]"
+      },
+      {
+        "func": "main",
+        "line": 138,
+        "code": "        print(f\"  Months Saved:      {saved}\")"
+      },
+      {
+        "func": "main",
+        "line": 141,
+        "code": "    print(f\"\\n✅ Amortization schedule saved to: {args.output}\")"
+      }
+    ]
+  },
+  "call_graph": {
+    "__init__": [
+      "ValueError"
+    ],
+    "generate_schedule": [
+      "PaymentDetail",
+      "max",
+      "min",
+      "range"
+    ],
+    "get_summary": [
+      "len",
+      "round",
+      "sum"
+    ],
+    "export_to_csv": [
+      "open",
+      "round"
+    ],
+    "main": [
+      "MortgageCalculator",
+      "parse_arguments",
+      "print"
+    ],
+    "<module>": [
+      "main"
+    ]
+  }
+}
