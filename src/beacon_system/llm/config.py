@@ -64,7 +64,7 @@ class ModelConfig:
     Unified model connectivity/config contract.
     """
     base_url: str = "https://openrouter.ai/api/v1"
-    api_key: str = "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"
+    api_key: str = ""
     model_name: str = "qwen/qwen3-32b"
     timeout_s: int = 120
     params: Dict[str, Any] = field(default_factory=lambda: {
