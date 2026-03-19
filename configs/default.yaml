@@ -24,7 +24,7 @@ reader:
 model:
   provider: openai_compat
   base_url: ${env:MODEL_BASE_URL,https://openrouter.ai/api/v1}
-  api_key: ${env:MODEL_API_KEY,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}
+  api_key: ${env:MODEL_API_KEY}
   model_name: ${env:MODEL_NAME,qwen/qwen3-32b}
   timeout_s: 120
   params:
