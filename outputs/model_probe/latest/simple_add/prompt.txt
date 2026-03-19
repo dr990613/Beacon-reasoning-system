@@ -1,0 +1,8 @@
+Return only valid Python code.
+Do not include markdown fences.
+Do not include explanation.
+Your response must begin with: def add(
+
+Implement exactly this function:
+def add(a: int, b: int) -> int:
+    """Return a + b."""

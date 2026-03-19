@@ -2,5 +2,10 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/benchmarks/CoderEval" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/benchmarks/CoderEval/CoderEval/home/travis/builds/repos/scieloorg---packtools/src/scielo-scholarly-data" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/benchmarks/CoderEval/CoderEval/home/travis/builds/repos/scieloorg---packtools/venv/src/scielo-scholarly-data" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/benchmarks/CoderEval/CoderEval/home/travis/builds/repos/zimeon---ocfl-py" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/benchmarks/CoderEval/workspace/neo4j-python-driver" vcs="Git" />
   </component>
 </project>

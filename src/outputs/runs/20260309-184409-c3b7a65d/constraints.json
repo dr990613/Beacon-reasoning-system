@@ -1,0 +1,32 @@
+{
+  "constraints": [
+    "must_define:add",
+    "must_be_python",
+    "deterministic_only",
+    "no_network",
+    "no_file_io"
+  ],
+  "task_id": "full_e2e_agent_001",
+  "tests": [
+    {
+      "call": "add(1, 2)",
+      "expected": 3,
+      "name": "basic_positive"
+    },
+    {
+      "call": "add(0, 0)",
+      "expected": 0,
+      "name": "basic_zero"
+    },
+    {
+      "call": "add(-1, 1)",
+      "expected": 0,
+      "name": "basic_mixed"
+    },
+    {
+      "call": "add(-3, -4)",
+      "expected": -7,
+      "name": "basic_negative"
+    }
+  ]
+}

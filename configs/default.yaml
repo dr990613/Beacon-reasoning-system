@@ -1,6 +1,13 @@
 # configs/default.yaml
-# Minimal config with fixed structure.
-# Rule: env can override model.* only; CLI can override run.* only.
+# Minimal unified config for Beacon system.
+# Current validated backend:
+# - OpenRouter (OpenAI-compatible)
+# - Qwen model family
+#
+# Rules:
+# - env may override model.*
+# - env may override run.outputs_dir
+# - test scripts may load this file directly without CLI preprocessing
 
 run:
   seed: 0
@@ -15,10 +22,10 @@ reader:
   max_global_inline: null
 
 model:
-  # Defaults are also defined in llm/config.py; keep same values here for clarity.
-  base_url: ${env:LITELLM_BASE_URL,http://a6k2.dgx:34000/v1}
-  api_key: ${env:LITELLM_API_KEY,}
-  model_name: ${env:MODEL_NAME,qwen3-32b}
+  provider: openai_compat
+  base_url: ${env:MODEL_BASE_URL,https://openrouter.ai/api/v1}
+  api_key: ${env:MODEL_API_KEY,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}
+  model_name: ${env:MODEL_NAME,qwen/qwen3-32b}
   timeout_s: 120
   params:
     temperature: 0.2
@@ -26,13 +33,11 @@ model:
     max_tokens: 2048
 
 adapter:
-  name: localrepo
+  name: smoke
   params:
     repo_root: .
-    # Fill these for localrepo smoke:
-    target_file: path/to/your_module.py
-    target_qualname: your_function_or_Class.method
+    target_file: null
+    target_qualname: null
     spec: ""
-    # Optional runtime config:
     run_cmd: "pytest -q"
     work_dir: null

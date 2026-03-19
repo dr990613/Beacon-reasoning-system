@@ -1,0 +1,14 @@
+{
+  "issues": [
+    {
+      "lineno": 5,
+      "message": "unterminated string literal (detected at line 5) (<unknown>, line 5)",
+      "offset": 345,
+      "text": "Wait, Python's standard libraries have datetime module. But handling nanoseconds might be tricky because the standard datetime objects in Python only go up to microseconds. Oh right, maybe using the datetime module's features with some adjustments. Or perhaps using a library like pytz or zoneinfo for timezone handling. But since the user didn't mention any specific libraries, I should stick to standard ones. ",
+      "type": "syntax_error"
+    }
+  ],
+  "ok": false,
+  "round": 1,
+  "stage": "syntax_gate"
+}

@@ -1,0 +1,13 @@
+{
+  "case": "hydrate_time_style",
+  "entry_function": "hydrate_time",
+  "raw_starts_with_def": false,
+  "target_function_found_by_regex": false,
+  "raw_parse_ok": true,
+  "raw_parse_err": null,
+  "extracted_parse_ok": false,
+  "extracted_parse_err": null,
+  "extracted_has_target": false,
+  "looks_like_explanation": false,
+  "raw_preview": ""
+}

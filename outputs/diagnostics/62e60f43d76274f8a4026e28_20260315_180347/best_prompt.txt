@@ -1,0 +1,12 @@
+[SOURCE=LLMClient.chat.args]
+Write Python code only.
+Return only the final code, with no explanation.
+Implement exactly this signature:
+def hydrate_time(nanoseconds, tz=None):
+Your response must begin with: def hydrate_time(
+Task description:
+Hydrator for `Time` and `LocalTime` values.
+
+:param nanoseconds:
+:param tz:
+:return: Time

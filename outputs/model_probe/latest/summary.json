@@ -1,0 +1,41 @@
+[
+  {
+    "case": "simple_add",
+    "entry_function": "add",
+    "raw_starts_with_def": true,
+    "target_function_found_by_regex": true,
+    "raw_parse_ok": true,
+    "raw_parse_err": null,
+    "extracted_parse_ok": true,
+    "extracted_parse_err": null,
+    "extracted_has_target": true,
+    "looks_like_explanation": false,
+    "raw_preview": "def add(a: int, b: int) -> int:\n    \"\"\"Return a + b.\"\"\"\n    return a + b"
+  },
+  {
+    "case": "hydrate_time_style",
+    "entry_function": "hydrate_time",
+    "raw_starts_with_def": false,
+    "target_function_found_by_regex": false,
+    "raw_parse_ok": true,
+    "raw_parse_err": null,
+    "extracted_parse_ok": false,
+    "extracted_parse_err": null,
+    "extracted_has_target": false,
+    "looks_like_explanation": false,
+    "raw_preview": ""
+  },
+  {
+    "case": "strict_code_only",
+    "entry_function": "solve",
+    "raw_starts_with_def": true,
+    "target_function_found_by_regex": true,
+    "raw_parse_ok": true,
+    "raw_parse_err": null,
+    "extracted_parse_ok": true,
+    "extracted_parse_err": null,
+    "extracted_has_target": true,
+    "looks_like_explanation": false,
+    "raw_preview": "def solve(nums: list[int]) -> int:\n    nums.sort()\n    return max(nums[-1] * nums[-2] * nums[-3], nums[0] * nums[1] * nums[-1])"
+  }
+]

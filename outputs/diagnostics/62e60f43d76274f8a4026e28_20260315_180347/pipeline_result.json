@@ -1,0 +1,22 @@
+{
+  "status": "ok",
+  "mode": "smoke",
+  "run_dir": "outputs\\runs\\20260315-150347-62c951b1",
+  "task_id": "62e60f43d76274f8a4026e28",
+  "rounds": 1,
+  "artifacts": {
+    "config": "outputs\\runs\\20260315-150347-62c951b1\\config.yaml",
+    "task": "outputs\\runs\\20260315-150347-62c951b1\\task.json",
+    "ir": "outputs\\runs\\20260315-150347-62c951b1\\ir.json",
+    "constraints": "outputs\\runs\\20260315-150347-62c951b1\\constraints.json",
+    "code_round1": "outputs\\runs\\20260315-150347-62c951b1\\code_round1.py",
+    "verifier_round1": "outputs\\runs\\20260315-150347-62c951b1\\verifier_round1.json",
+    "exec_round1": "outputs\\runs\\20260315-150347-62c951b1\\exec_round1.json",
+    "adapter_snapshot": "outputs\\runs\\20260315-150347-62c951b1\\adapter_snapshot.json",
+    "generation_round1": "outputs\\runs\\20260315-150347-62c951b1\\generation_round1.json"
+  },
+  "verifier_ok": true,
+  "exec_status": "pass",
+  "error_stage": null,
+  "error": null
+}

@@ -1,0 +1,10 @@
+{
+  "context_blocks": [],
+  "docstring": "Hydrator for `Time` and `LocalTime` values.\n\n:param nanoseconds:\n:param tz:\n:return: Time",
+  "entry_function": "hydrate_time",
+  "lang": "python",
+  "runnable_level": "plib_runnable",
+  "signature": "def hydrate_time(nanoseconds, tz=None):",
+  "target_file": null,
+  "task_id": "62e60f43d76274f8a4026e28"
+}

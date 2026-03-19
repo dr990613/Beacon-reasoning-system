@@ -2,440 +2,389 @@
 # -*- coding: utf-8 -*-
 
 """
-Code Generator Agent (Beacon-constrained)
+Code generator / reviser for Beacon agent workflow.
 
-Design goals:
-- Consume ONLY: TaskObject + BeaconIR + Constraints + injected LLMClient (+ optional memory)
-- NO Beacon reasoning, NO callgraph inference, NO env access, NO adapter/runtime coupling
-- Produce code that satisfies Constraints (required_calls/symbols, forbidden_specs, match_specs)
-- Deterministic prompt assembly (stable JSON, sorted lists) to support reproducible experiments
+Scope:
+- Consume ONLY:
+  Task + BeaconIR + Constraints + selected thought + LLMClient
+- Produce:
+  GenerationPayload + FormatValidationResult
+- Support:
+  initial generation and minimal revision
 
-IMPORTANT:
-- logic outputs (BeaconIR / Constraints) may be dataclass-like OR dict-like, and may not have `version`.
-- This generator must be schema-tolerant (duck typing).
+Non-goals:
+- no Beacon reasoning reconstruction
+- no scoring
+- no execution
+- no verifier logic duplication
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Optional, Tuple
 
-import json
+from ..llm.client import LLMClient, LLMError
+from ..types import (
+    BeaconIR,
+    CodeBlock,
+    Constraints,
+    FormatValidationResult,
+    GenerationPayload,
+    OutputFormatSpec,
+    TaskObject,
+    ThoughtCandidate,
+)
+from .prompts import make_generate_messages, make_revise_messages
 
-from ..types import TaskObject, Directive
-from ..llm.client import LLMClient
+
+def _safe_text(text: Optional[str]) -> str:
+    return str(text or "")
 
 
-# ----------------------------
-# Prompt building (deterministic)
-# ----------------------------
+def _guess_language(task: TaskObject) -> str:
+    lang = str(task.lang or "").strip().lower()
+    if lang:
+        return lang
+    return "python"
 
-def _stable_json(obj: Any) -> str:
+
+def _default_filename(task: TaskObject) -> str:
+    return str(task.target.get("file") or "generated_code.txt")
+
+
+def _extract_fenced_code(raw_text: str) -> Optional[str]:
     """
-    Local stable JSON for prompt assembly only.
-    Canonical stable_json for artifacts is in beacon_system.io.stable_json.
+    Extract first fenced code block if present.
+    Supports:
+    ```python
+    ...
+    ```
     """
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    text = _safe_text(raw_text)
+    pattern = re.compile(r"```[a-zA-Z0-9_\-]*\n(.*?)```", re.DOTALL)
+    m = pattern.search(text)
+    if not m:
+        return None
+    return m.group(1).strip()
 
 
-def _sorted_unique(xs: Iterable[str]) -> List[str]:
-    return sorted(set([x for x in xs if x is not None and str(x).strip() != ""]))
-
-
-def _clip_text(s: str, limit: int) -> str:
-    s = s or ""
-    if len(s) <= limit:
-        return s
-    return s[:limit] + "\n# ... (truncated)\n"
-
-
-def _format_match_specs(specs: Sequence[Any], limit: int = 60) -> List[Dict[str, Any]]:
+def _strip_common_explanations(raw_text: str) -> str:
     """
-    MatchSpec is required to be stable_json serializable by contract.
-    Keep a small cap to avoid prompt bloat.
+    Minimal cleanup when the model adds prose around code.
+
+    Strategy:
+    - prefer fenced block if present
+    - otherwise drop a few common leading explanation lines
+    - keep the rest untouched to avoid over-cleaning
     """
-    out: List[Dict[str, Any]] = []
-    for sp in list(specs)[:limit]:
-        if isinstance(sp, dict):
-            out.append(sp)
-        else:
-            d = getattr(sp, "__dict__", None)
-            out.append(d if isinstance(d, dict) else {"repr": repr(sp)})
-    return out
+    text = _safe_text(raw_text).strip()
+    if not text:
+        return ""
+
+    fenced = _extract_fenced_code(text)
+    if fenced is not None:
+        return fenced.strip()
+
+    lines = text.splitlines()
+
+    prefixes = (
+        "here is",
+        "here's",
+        "below is",
+        "the code",
+        "updated code",
+        "revised code",
+        "solution:",
+        "explanation:",
+    )
+
+    cleaned_lines = []
+    skipping_prefix = True
+
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if skipping_prefix and stripped:
+            if any(lowered.startswith(p) for p in prefixes):
+                continue
+            skipping_prefix = False
+
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip()
 
 
-@dataclass(frozen=True)
-class GeneratorOptions:
-    max_ir_nodes: int = 80
-    max_ir_edges: int = 120
-    max_spec_chars: int = 4000
-    max_prev_code_chars: int = 6000
-    enforce_no_markdown: bool = True
+def _validate_output_format(
+    *,
+    raw_text: str,
+    normalized_code: str,
+    task: TaskObject,
+    fmt: Optional[OutputFormatSpec],
+) -> FormatValidationResult:
+    fmt = fmt or OutputFormatSpec()
+    issues = []
+
+    raw = _safe_text(raw_text)
+    code = _safe_text(normalized_code)
+
+    if not code.strip():
+        issues.append("empty_code")
+
+    if not fmt.fenced_code_block and "```" in raw:
+        issues.append("markdown_fence_detected")
+
+    if fmt.code_only:
+        lowered = raw.lower()
+        noisy_prefixes = (
+            "here is",
+            "here's",
+            "below is",
+            "the updated code",
+            "the revised code",
+            "explanation:",
+        )
+        if any(lowered.strip().startswith(p) for p in noisy_prefixes):
+            issues.append("leading_explanation_detected")
+
+    if fmt.require_language_match:
+        lang = _guess_language(task)
+        if lang == "python":
+            # very light heuristic only
+            if "class " not in code and "def " not in code and "=" not in code and "return" not in code:
+                issues.append("language_match_weak")
+
+    return FormatValidationResult(
+        ok=len(issues) == 0,
+        normalized_code=code,
+        issues=tuple(issues),
+        meta={
+            "validator": "generator.format",
+            "raw_len": len(raw),
+            "code_len": len(code),
+            "task_lang": task.lang,
+        },
+    )
 
 
+def _build_generation_payload(
+    *,
+    raw_text: str,
+    code: str,
+    task: TaskObject,
+    fmt_check: FormatValidationResult,
+) -> GenerationPayload:
+    primary = CodeBlock(
+        language=_guess_language(task),
+        content=code,
+        kind="replacement_impl",
+        filename=_default_filename(task),
+        meta={
+            "target_file": task.target.get("file"),
+            "target_qualname": task.target.get("qualname"),
+        },
+    )
+    return GenerationPayload(
+        primary=primary,
+        auxiliary=(),
+        format_ok=fmt_check.ok,
+        raw_text=_safe_text(raw_text),
+        meta={
+            "task_id": task.id,
+            "target_file": task.target.get("file"),
+            "target_qualname": task.target.get("qualname"),
+        },
+    )
+
+
+@dataclass
 class CodeGenerator:
     """
-    Minimal generator agent; prompt compiler + LLM call wrapper.
+    Minimal Beacon-constrained generator.
 
-    memory: optional object that MAY support:
-      - retrieve_project(task: TaskObject) -> dict | None
-      - retrieve_experience(task: TaskObject, ir: Any, constraints: Any) -> dict | None
-    These are strictly optional and treated as passive context.
+    Responsibilities:
+    - build generation/revision prompts
+    - call LLM
+    - normalize model output into GenerationPayload
+    - run lightweight format validation
+
+    Non-responsibilities:
+    - no reasoning rebuild
+    - no scoring
+    - no execution
+    - no verifier invocation
     """
+    llm: LLMClient
+    print_io: bool = False
 
-    def __init__(self, llm: LLMClient, *, options: Optional[GeneratorOptions] = None):
-        self._llm = llm
-        self._opt = options or GeneratorOptions()
+    def _print(self, message: str) -> None:
+        if self.print_io:
+            print(f"[CodeGenerator] {message}")
 
-    # ----------------------------
-    # Public API
-    # ----------------------------
+    def _normalize_generation(
+        self,
+        *,
+        raw_text: str,
+        task: TaskObject,
+        output_format: Optional[OutputFormatSpec],
+    ) -> Tuple[GenerationPayload, FormatValidationResult]:
+        cleaned = _strip_common_explanations(raw_text)
+        fmt_check = _validate_output_format(
+            raw_text=raw_text,
+            normalized_code=cleaned,
+            task=task,
+            fmt=output_format,
+        )
+        payload = _build_generation_payload(
+            raw_text=raw_text,
+            code=fmt_check.normalized_code,
+            task=task,
+            fmt_check=fmt_check,
+        )
+        return payload, fmt_check
 
     def generate(
         self,
+        *,
         task: TaskObject,
-        ir: Any,
-        constraints: Any,
-        memory: Optional[object] = None,
-    ) -> str:
-        messages = self._build_generate_messages(task, ir, constraints, memory)
-        code = self._llm.chat(messages)
-        return self._postprocess_code(code)
+        ir: BeaconIR,
+        constraints: Constraints,
+        selected_thought: Optional[ThoughtCandidate],
+        output_format: Optional[OutputFormatSpec] = None,
+        extra_instructions: Optional[str] = None,
+    ) -> Tuple[GenerationPayload, FormatValidationResult]:
+        self._print(f"start generate: task={task.id}")
+
+        messages = make_generate_messages(
+            task=task,
+            ir=ir,
+            constraints=constraints,
+            selected_thought=selected_thought,
+            output_format=output_format,
+            extra_instructions=extra_instructions,
+        )
+
+        try:
+            raw_text = self.llm.generate_text(messages=messages)
+            self._print(f"generate response chars={len(raw_text)}")
+        except LLMError as e:
+            self._print(f"generate llm error: {e}")
+            raw_text = ""
+
+        payload, fmt_check = self._normalize_generation(
+            raw_text=raw_text,
+            task=task,
+            output_format=output_format,
+        )
+
+        self._print(
+            f"generate done: format_ok={fmt_check.ok} code_len={len(fmt_check.normalized_code)}"
+        )
+        return payload, fmt_check
 
     def revise(
         self,
+        *,
         task: TaskObject,
-        ir: Any,
-        constraints: Any,
-        llm: LLMClient,  # allow override
-        directives: Tuple[Directive, ...],
-        prev_code: str,
-        memory: Optional[object] = None,
-    ) -> str:
-        messages = self._build_revise_messages(task, ir, constraints, directives, prev_code, memory)
-        code = llm.chat(messages)
-        return self._postprocess_code(code)
+        ir: BeaconIR,
+        constraints: Constraints,
+        selected_thought: Optional[ThoughtCandidate],
+        previous_code: str,
+        verifier_summary: Optional[object] = None,
+        runtime_summary: Optional[object] = None,
+        beacon_usage_summary: Optional[object] = None,
+        output_format: Optional[OutputFormatSpec] = None,
+        extra_instructions: Optional[str] = None,
+    ) -> Tuple[GenerationPayload, FormatValidationResult]:
+        self._print(f"start revise: task={task.id}")
 
-    # ----------------------------
-    # Prompt templates
-    # ----------------------------
+        messages = make_revise_messages(
+            task=task,
+            ir=ir,
+            constraints=constraints,
+            selected_thought=selected_thought,
+            previous_code=previous_code,
+            verifier_summary=verifier_summary,
+            runtime_summary=runtime_summary,
+            beacon_usage_summary=beacon_usage_summary,
+            output_format=output_format,
+            extra_instructions=extra_instructions,
+        )
 
-    def _system_prompt(self) -> str:
-        lines = [
-            "You are a code generation agent in a Beacon-constrained pipeline.",
-            "Beacon Logic is executed upstream. You MUST NOT re-derive reasoning rules.",
-            "Your job: implement the target specified by TaskObject while satisfying Constraints.",
-            "",
-            "Hard rules:",
-            "1) Satisfy required_calls and required_symbols explicitly in the implementation.",
-            "2) Do NOT introduce forbidden patterns (forbidden_specs).",
-            "3) Use only grounded symbols/calls from context or the task/project.",
-            "4) Output must be Python code ONLY, no markdown, no explanations.",
-            "5) Prefer minimal, stable, readable implementation; avoid over-engineering.",
-        ]
-        return "\n".join(lines)
+        try:
+            raw_text = self.llm.generate_text(messages=messages)
+            self._print(f"revise response chars={len(raw_text)}")
+        except LLMError as e:
+            self._print(f"revise llm error: {e}")
+            raw_text = previous_code or ""
 
-    def _build_task_payload(self, task: TaskObject) -> Dict[str, Any]:
-        return {
-            "id": task.id,
-            "lang": task.lang,
-            "level": task.level,
-            "target": {"file": task.target.get("file"), "qualname": task.target.get("qualname")},
-            "spec": _clip_text(task.spec or "", self._opt.max_spec_chars),
-            "context_keys": _sorted_unique(list((task.context or {}).keys())),
-            "meta_keys": _sorted_unique(list((task.meta or {}).keys())),
-        }
+        payload, fmt_check = self._normalize_generation(
+            raw_text=raw_text,
+            task=task,
+            output_format=output_format,
+        )
 
-    # ----------------------------
-    # Schema-tolerant IR/Constraints payloads
-    # ----------------------------
-
-    def _build_ir_payload(self, ir: Any) -> Dict[str, Any]:
-        """
-        Build a minimal IR payload for prompting.
-
-        Supports:
-        - dataclass-like IR (attributes)
-        - dict-like IR (keys)
-        - missing `version` (infer from meta)
-        - symbols as dict or dataclass
-        """
-        def g(obj: Any, name: str, default: Any = None) -> Any:
-            if isinstance(obj, dict):
-                return obj.get(name, default)
-            return getattr(obj, name, default)
-
-        nodes_raw = g(ir, "nodes", []) or []
-        edges_raw = g(ir, "edges", []) or []
-
-        nodes = list(nodes_raw)[: self._opt.max_ir_nodes]
-        edges = list(edges_raw)[: self._opt.max_ir_edges]
-
-        def slim_anchor(a: Any) -> Dict[str, Any]:
-            if isinstance(a, dict):
-                return {
-                    "file": a.get("file"),
-                    "qualname": a.get("qualname"),
-                    "lineno": a.get("lineno"),
-                    "end_lineno": a.get("end_lineno"),
-                    "namespace": a.get("namespace"),
-                }
-            return {
-                "file": getattr(a, "file", None),
-                "qualname": getattr(a, "qualname", None),
-                "lineno": getattr(a, "lineno", None),
-                "end_lineno": getattr(a, "end_lineno", None),
-                "namespace": getattr(a, "namespace", None),
-            }
-
-        node_slim: List[Dict[str, Any]] = []
-        for n in nodes:
-            if isinstance(n, dict):
-                node_slim.append(
-                    {
-                        "id": n.get("id"),
-                        "kind": n.get("kind"),
-                        "text": n.get("text"),
-                        "anchor": slim_anchor(n.get("anchor", {})),
-                        "meta": n.get("meta") or {},
-                    }
-                )
-            else:
-                a = getattr(n, "anchor", None)
-                node_slim.append(
-                    {
-                        "id": getattr(n, "id", None),
-                        "kind": getattr(n, "kind", None),
-                        "text": getattr(n, "text", None),
-                        "anchor": slim_anchor(a or {}),
-                        "meta": getattr(n, "meta", None) or {},
-                    }
-                )
-
-        edge_slim: List[Dict[str, Any]] = []
-        for e in edges:
-            if isinstance(e, dict):
-                edge_slim.append(
-                    {"kind": e.get("kind"), "src": e.get("src"), "dst": e.get("dst"), "meta": e.get("meta") or {}}
-                )
-            else:
-                edge_slim.append(
-                    {
-                        "kind": getattr(e, "kind", None),
-                        "src": getattr(e, "src", None),
-                        "dst": getattr(e, "dst", None),
-                        "meta": getattr(e, "meta", None) or {},
-                    }
-                )
-
-        sym = g(ir, "symbols", {}) or {}
-        if isinstance(sym, dict):
-            imports = list(sym.get("imports", []) or [])
-            globs = list(sym.get("globals", []) or [])
-            attrs = list(sym.get("attrs", []) or [])
-            calls = list(sym.get("calls", []) or [])
-        else:
-            imports = list(getattr(sym, "imports", ()) or ())
-            globs = list(getattr(sym, "globals", ()) or ())
-            attrs = list(getattr(sym, "attrs", ()) or ())
-            calls = list(getattr(sym, "calls", ()) or ())
-
-        meta = g(ir, "meta", {}) or {}
-        entry = g(ir, "entry", {}) or {}
-
-        version = g(ir, "version", None)
-        if version is None:
-            version = meta.get("schema_version") or meta.get("version") or "mvp-0.1"
-
-        forbidden = g(ir, "forbidden", []) or []
-
-        return {
-            "version": version,
-            "entry": entry,
-            "nodes": node_slim,
-            "edges": edge_slim,
-            "symbols": {"imports": imports, "globals": globs, "attrs": attrs, "calls": calls},
-            "forbidden_node_ids": list(forbidden),
-            "meta": meta,
-        }
-
-    def _build_constraints_payload(self, constraints: Any) -> Dict[str, Any]:
-        """
-        Constraints payload builder (schema-tolerant).
-
-        Supports:
-        - dataclass-like constraints (attributes)
-        - dict-like constraints (keys)
-        - missing `version` (infer from meta)
-        """
-        def g(obj: Any, name: str, default: Any = None) -> Any:
-            if isinstance(obj, dict):
-                return obj.get(name, default)
-            return getattr(obj, name, default)
-
-        meta = g(constraints, "meta", {}) or {}
-
-        version = g(constraints, "version", None)
-        if version is None:
-            version = (
-                meta.get("constraints_version")
-                or meta.get("schema_version")
-                or meta.get("version")
-                or "mvp-0.1"
-            )
-
-        required_symbols = g(constraints, "required_symbols", ()) or ()
-        required_calls = g(constraints, "required_calls", ()) or ()
-        forbidden_specs = g(constraints, "forbidden_specs", ()) or ()
-        match_specs = g(constraints, "match_specs", ()) or ()
-
-        return {
-            "version": version,
-            "required_symbols": _sorted_unique(required_symbols),
-            "required_calls": _sorted_unique(required_calls),
-            "forbidden_specs": _format_match_specs(forbidden_specs),
-            "match_specs": _format_match_specs(match_specs),
-            "meta": meta,
-        }
-
-    # ----------------------------
-    # Optional memory retrieval hooks
-    # ----------------------------
-
-    def _maybe_retrieve_memory(self, memory: Optional[object], task: TaskObject, ir: Any, constraints: Any) -> Dict[str, Any]:
-        if memory is None:
-            return {}
-
-        out: Dict[str, Any] = {}
-        retrieve_project = getattr(memory, "retrieve_project", None)
-        if callable(retrieve_project):
-            try:
-                out["project_memory"] = retrieve_project(task) or {}
-            except Exception:
-                out["project_memory"] = {}
-
-        retrieve_experience = getattr(memory, "retrieve_experience", None)
-        if callable(retrieve_experience):
-            try:
-                out["experience_memory"] = retrieve_experience(task, ir, constraints) or {}
-            except Exception:
-                out["experience_memory"] = {}
-        return out
-
-    # ----------------------------
-    # Message builders
-    # ----------------------------
-
-    def _build_generate_messages(self, task: TaskObject, ir: Any, constraints: Any, memory: Optional[object]) -> List[Dict[str, str]]:
-        task_payload = self._build_task_payload(task)
-        ir_payload = self._build_ir_payload(ir)
-        cons_payload = self._build_constraints_payload(constraints)
-        mem_payload = self._maybe_retrieve_memory(memory, task, ir, constraints)
-
-        user_payload = {
-            "task": task_payload,
-            "beacon_ir": ir_payload,
-            "constraints": cons_payload,
-            "memory": mem_payload,
-            "instructions": [
-                "Implement the target qualname in the target file.",
-                "Satisfy required_calls and required_symbols explicitly.",
-                "Avoid forbidden_specs strictly.",
-                "Return Python code ONLY.",
-            ],
-        }
-        return [
-            {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": _stable_json(user_payload)},
-        ]
-
-    def _build_revise_messages(
-        self,
-        task: TaskObject,
-        ir: Any,
-        constraints: Any,
-        directives: Tuple[Directive, ...],
-        prev_code: str,
-        memory: Optional[object],
-    ) -> List[Dict[str, str]]:
-        task_payload = self._build_task_payload(task)
-        ir_payload = self._build_ir_payload(ir)
-        cons_payload = self._build_constraints_payload(constraints)
-        mem_payload = self._maybe_retrieve_memory(memory, task, ir, constraints)
-
-        dir_payload: List[Dict[str, Any]] = []
-        for d in directives:
-            dp = getattr(d, "__dict__", None)
-            dir_payload.append(dp if isinstance(dp, dict) else {"repr": repr(d)})
-
-        user_payload = {
-            "task": task_payload,
-            "beacon_ir": ir_payload,
-            "constraints": cons_payload,
-            "memory": mem_payload,
-            "directives": dir_payload,
-            "prev_code": _clip_text(prev_code or "", self._opt.max_prev_code_chars),
-            "instructions": [
-                "Revise the previous code according to directives.",
-                "Do NOT break existing correct behavior.",
-                "Ensure required_calls/required_symbols coverage improves or stays satisfied.",
-                "Avoid forbidden_specs strictly.",
-                "Return Python code ONLY.",
-            ],
-        }
-        return [
-            {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": _stable_json(user_payload)},
-        ]
-
-    # ----------------------------
-    # Output post-processing
-    # ----------------------------
-
-    def _postprocess_code(self, raw: str) -> str:
-        s = (raw or "").strip()
-
-        # Strip markdown fences if the model violated format.
-        if s.startswith("```"):
-            parts = s.split("\n")
-            if parts and parts[0].startswith("```"):
-                parts = parts[1:]
-            if parts and parts[-1].strip().startswith("```"):
-                parts = parts[:-1]
-            s = "\n".join(parts).strip()
-
-        if self._opt.enforce_no_markdown:
-            idx = s.find("def ")
-            if idx > 0:
-                prefix = s[:idx].lower()
-                if any(tok in prefix for tok in ["explain", "here", "note", "说明", "当然"]):
-                    s = s[idx:].lstrip()
-
-        return s
+        self._print(
+            f"revise done: format_ok={fmt_check.ok} code_len={len(fmt_check.normalized_code)}"
+        )
+        return payload, fmt_check
 
 
-# ----------------------------
-# Contract-aligned functional wrappers
-# ----------------------------
-
-def generate(
-    task: TaskObject,
-    ir: Any,
-    constraints: Any,
+def generate_code(
+    *,
     llm: LLMClient,
-    memory: Optional[object] = None,
-) -> str:
-    return CodeGenerator(llm).generate(task, ir, constraints, memory)
-
-
-def revise(
     task: TaskObject,
-    ir: Any,
-    constraints: Any,
+    ir: BeaconIR,
+    constraints: Constraints,
+    selected_thought: Optional[ThoughtCandidate],
+    output_format: Optional[OutputFormatSpec] = None,
+    extra_instructions: Optional[str] = None,
+    print_io: bool = False,
+) -> Tuple[GenerationPayload, FormatValidationResult]:
+    """
+    Convenience function for initial generation.
+    """
+    generator = CodeGenerator(llm=llm, print_io=print_io)
+    return generator.generate(
+        task=task,
+        ir=ir,
+        constraints=constraints,
+        selected_thought=selected_thought,
+        output_format=output_format,
+        extra_instructions=extra_instructions,
+    )
+
+
+def revise_code(
+    *,
     llm: LLMClient,
-    directives: Tuple[Directive, ...],
-    prev_code: str,
-    memory: Optional[object] = None,
-) -> str:
-    gen = CodeGenerator(llm)
-    return gen.revise(task, ir, constraints, llm, directives, prev_code, memory)
+    task: TaskObject,
+    ir: BeaconIR,
+    constraints: Constraints,
+    selected_thought: Optional[ThoughtCandidate],
+    previous_code: str,
+    verifier_summary: Optional[object] = None,
+    runtime_summary: Optional[object] = None,
+    beacon_usage_summary: Optional[object] = None,
+    output_format: Optional[OutputFormatSpec] = None,
+    extra_instructions: Optional[str] = None,
+    print_io: bool = False,
+) -> Tuple[GenerationPayload, FormatValidationResult]:
+    """
+    Convenience function for revision generation.
+    """
+    generator = CodeGenerator(llm=llm, print_io=print_io)
+    return generator.revise(
+        task=task,
+        ir=ir,
+        constraints=constraints,
+        selected_thought=selected_thought,
+        previous_code=previous_code,
+        verifier_summary=verifier_summary,
+        runtime_summary=runtime_summary,
+        beacon_usage_summary=beacon_usage_summary,
+        output_format=output_format,
+        extra_instructions=extra_instructions,
+    )

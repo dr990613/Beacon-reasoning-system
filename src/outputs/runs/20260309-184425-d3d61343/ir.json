@@ -1,0 +1,19 @@
+{
+  "context_blocks": [
+    "You are patching a missing function inside a larger existing codebase.",
+    "Do not rewrite the whole file. Return only the target function implementation.",
+    "The function must integrate with existing helpers and existing data model.",
+    "Use compute_subtotal(items).",
+    "Use compute_discount_rate(customer_tier, coupon_code).",
+    "Return round(subtotal * (1 - rate), 2).",
+    "Project source with the gap is below:",
+    "from __future__ import annotations\n\nfrom dataclasses import dataclass\nfrom typing import List, Dict\n\n\n@dataclass\nclass OrderItem:\n    name: str\n    price: float\n    quantity: int\n\n\ndef normalize_customer_tier(tier: str) -> str:\n    tier = (tier or \"\").strip().lower()\n    if tier in {\"gold\", \"silver\", \"bronze\"}:\n        return tier\n    return \"bronze\"\n\n\ndef compute_subtotal(items: List[OrderItem]) -> float:\n    subtotal = 0.0\n    for item in items:\n        subtotal += item.price * item.quantity\n    return round(subtotal, 2)\n\n\ndef compute_discount_rate(customer_tier: str, coupon_code: str | None = None) -> float:\n    tier = normalize_customer_tier(customer_tier)\n    rate = 0.0\n\n    if tier == \"gold\":\n        rate += 0.15\n    elif tier == \"silver\":\n        rate += 0.08\n    else:\n        rate += 0.03\n\n    if coupon_code:\n        code = coupon_code.strip().upper()\n        if code == \"SAVE10\":\n            rate += 0.10\n        elif code == \"SAVE5\":\n            rate += 0.05\n\n    # business cap\n    return min(rate, 0.25)\n\n\ndef compute_discounted_total(\n    items: List[OrderItem],\n    customer_tier: str,\n    coupon_code: str | None = None,\n) -> float:\n    \"\"\"\n    MISSING_TARGET_FUNCTION\n    The agent should restore this function.\n    Expected behavior:\n    1. compute subtotal using compute_subtotal(items)\n    2. compute discount rate using compute_discount_rate(customer_tier, coupon_code)\n    3. apply discount: subtotal * (1 - rate)\n    4. return rounded float with 2 decimals\n    \"\"\"\n    raise NotImplementedError(\"MISSING_TARGET_FUNCTION\")\n\n\ndef build_receipt(\n    items: List[OrderItem],\n    customer_tier: str,\n    coupon_code: str | None = None,\n) -> Dict[str, float]:\n    subtotal = compute_subtotal(items)\n    total = compute_discounted_total(items, customer_tier, coupon_code)\n    discount = round(subtotal - total, 2)\n\n    return {\n        \"subtotal\": subtotal,\n        \"discount\": discount,\n        \"total\": total,\n    }\n\n\ndef describe_receipt(receipt: Dict[str, float]) -> str:\n    return (\n        f\"Subtotal={receipt['subtotal']:.2f}; \"\n        f\"Discount={receipt['discount']:.2f}; \"\n        f\"Total={receipt['total']:.2f}\"\n    )\n\n\ndef sample_order() -> List[OrderItem]:\n    return [\n        OrderItem(\"Keyboard\", 100.0, 1),\n        OrderItem(\"Mouse\", 50.0, 2),\n        OrderItem(\"Cable\", 10.0, 3),\n    ]\n\n\ndef main() -> str:\n    items = sample_order()\n    receipt = build_receipt(items, \"gold\", \"SAVE10\")\n    return describe_receipt(receipt)\n\n\nif __name__ == \"__main__\":\n    print(main())\n"
+  ],
+  "docstring": "Restore the missing function compute_discounted_total in a project-sized Python file. The function must use existing helpers compute_subtotal(items) and compute_discount_rate(customer_tier, coupon_code), then apply the discount and return a rounded float with 2 decimals.",
+  "entry_function": "compute_discounted_total",
+  "lang": "python",
+  "runnable_level": "project_runnable",
+  "signature": "def compute_discounted_total(items: List[OrderItem], customer_tier: str, coupon_code: str | None = None) -> float:",
+  "target_file": "order_project.py",
+  "task_id": "codereval_like_full_001"
+}

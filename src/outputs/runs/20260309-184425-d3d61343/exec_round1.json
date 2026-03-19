@@ -1,0 +1,14 @@
+{
+  "details": [
+    {
+      "call": "compute_discounted_total(sample_items(), 'gold', 'SAVE10')",
+      "error": "NameError(\"name 'sample_items' is not defined\")",
+      "expected": 172.5,
+      "name": "discounted_total_gold_save10",
+      "ok": false
+    }
+  ],
+  "failed": 1,
+  "passed": 0,
+  "status": "fail"
+}

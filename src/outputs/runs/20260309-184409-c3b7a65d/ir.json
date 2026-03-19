@@ -1,0 +1,16 @@
+{
+  "context_blocks": [
+    "Return only deterministic logic.",
+    "Do not read files.",
+    "Do not use network.",
+    "Do not import unnecessary libraries.",
+    "Keep the implementation minimal and correct."
+  ],
+  "docstring": "Return the sum of two integers. The implementation must be deterministic and minimal.",
+  "entry_function": "add",
+  "lang": "python",
+  "runnable_level": "unit_runnable",
+  "signature": "def add(a: int, b: int) -> int:",
+  "target_file": "generated_add.py",
+  "task_id": "full_e2e_agent_001"
+}

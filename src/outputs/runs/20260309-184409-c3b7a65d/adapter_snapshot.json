@@ -1,0 +1,10 @@
+{
+  "runtime": {
+    "kind": "inline_exec",
+    "smoke": true
+  },
+  "task_adapter": {
+    "kind": "direct_task_dict",
+    "smoke": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "directives": [],
+  "notes": [
+    "Verifier skipped because syntax gate failed."
+  ],
+  "ok": false,
+  "round": 1,
+  "stage": "verifier"
+}

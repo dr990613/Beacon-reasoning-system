@@ -1,0 +1,45 @@
+{
+  "id": "gen-1773570142-AozcX5JarCPfetj1gC6W",
+  "object": "chat.completion",
+  "created": 1773570142,
+  "model": "qwen/qwen3-32b-04-28",
+  "provider": "AtlasCloud",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "```python\ndef solve():\n    def hydrate_time(nanoseconds, tz=None):\n        from datetime import datetime, timezone\n        if tz is None:\n            tz = timezone.utc\n        microseconds, ns_remainder = divmod(nanoseconds, 1000)\n        seconds, us_remainder = divmod(microseconds, 10**6)\n        dt = datetime.fromtimestamp(seconds, tz=tz).replace(microsecond=us_remainder)\n        return dt.time()\n\n    return hydrate_time\n```",
+        "refusal": null,
+        "reasoning": null
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 75,
+    "completion_tokens": 109,
+    "total_tokens": 184,
+    "cost": 0.0001383,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.0001383,
+      "upstream_inference_prompt_cost": 7.5e-06,
+      "upstream_inference_completions_cost": 0.0001308
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

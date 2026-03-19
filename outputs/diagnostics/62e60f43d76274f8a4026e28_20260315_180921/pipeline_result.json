@@ -1,0 +1,22 @@
+{
+  "status": "generation_failed",
+  "mode": "smoke",
+  "run_dir": "outputs\\runs\\20260315-150921-6f14ec12",
+  "task_id": "62e60f43d76274f8a4026e28",
+  "rounds": 1,
+  "artifacts": {
+    "config": "outputs\\runs\\20260315-150921-6f14ec12\\config.yaml",
+    "task": "outputs\\runs\\20260315-150921-6f14ec12\\task.json",
+    "ir": "outputs\\runs\\20260315-150921-6f14ec12\\ir.json",
+    "constraints": "outputs\\runs\\20260315-150921-6f14ec12\\constraints.json",
+    "code_round1": "outputs\\runs\\20260315-150921-6f14ec12\\code_round1.py",
+    "verifier_round1": "outputs\\runs\\20260315-150921-6f14ec12\\verifier_round1.json",
+    "exec_round1": "outputs\\runs\\20260315-150921-6f14ec12\\exec_round1.json",
+    "adapter_snapshot": "outputs\\runs\\20260315-150921-6f14ec12\\adapter_snapshot.json",
+    "generation_round1": "outputs\\runs\\20260315-150921-6f14ec12\\generation_round1.json"
+  },
+  "verifier_ok": false,
+  "exec_status": "blocked",
+  "error_stage": "syntax_gate",
+  "error": "{\"ok\": false, \"stage\": \"syntax_gate\", \"entry_function\": \"hydrate_time\", \"issues\": [{\"type\": \"syntax_error\", \"message\": \"unterminated string literal (detected at line 70) (<unknown>, line 70)\", \"lineno\": 70, \"offset\": 255, \"text\": \"Wait, but divmod(total_seconds, 3600) gives hours. But total_seconds is up to (24*3600 -1), since we modded nanoseconds. So for example, if total_seconds is 86400, then after mod, nanoseconds would be 0. So the code would have total_seconds as 0. So that's okay.\"}]}"
+}

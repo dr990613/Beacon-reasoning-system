@@ -1,0 +1,10 @@
+{
+  "context_blocks": [],
+  "docstring": "Hydrator for `Time` and `LocalTime` values.\n\n:param nanoseconds:\n:param tz:\n:return: Time",
+  "entry_function": null,
+  "lang": null,
+  "runnable_level": null,
+  "signature": null,
+  "target_file": null,
+  "task_id": null
+}

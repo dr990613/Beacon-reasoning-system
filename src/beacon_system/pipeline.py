@@ -2,20 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-Pipeline (唯一 orchestrator)
+Top-level pipeline orchestration.
 
-Fixed order (NO registry, NO branching explosion):
-1) TaskAdapter.build_task() -> (TaskObject, ProjectIndex)
-2) logic.engine.build(...) -> (BeaconIR, Constraints, debug?)
-3) Generator.generate(...) -> code
-4) Verifier.check(code, Constraints) -> report (optional)
-5) RuntimeAdapter.run(task, patch) -> ExecutionResult
-6) io.write_artifacts(...) every round
+Scope:
+- Connect ONLY:
+  adapter -> agent workflow -> runtime -> io
+- Keep this as the single outer orchestrator.
+- Do not place reasoning / planning / scoring / generation logic here.
 
-Hard rules:
-- Only depend on adapters/base.py interfaces (TaskAdapter, RuntimeAdapter)
-- No reasoning or constraint compilation here (handled by logic)
-- Determinism: artifacts should be stable and replayable
+Non-goals:
+- no prompt logic
+- no verifier logic
+- no memory logic
+- no runtime patch implementation details
 """
 
 from __future__ import annotations
@@ -23,164 +22,213 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from .adapters.base import TaskAdapter, RuntimeAdapter
+from .adapters.base import RuntimeAdapter, TaskAdapter
+from .agents.workflow import AgentWorkflow, AgentWorkflowResult
+from .io import ensure_run_dir, make_run_id, write_artifacts
 from .llm.client import LLMClient
-from .agents import generator as gen_mod
-from .agents import verifier as ver_mod
-from .logic.engine import build as logic_build
-from .io import make_run_id, write_artifacts
-
 from .types import (
-    TaskObject,
-    ProjectIndex,
-    ReaderConfig,
+    ExecResult,
+    GenerationPayload,
+    PipelineResult,
     RunConfig,
-    BeaconIR,
-    Constraints,
-    VerifierReport,
-    ExecutionResult,
+    TaskObject,
 )
 
 
-def _build_reader_config(reader_dict: Dict[str, Any]) -> ReaderConfig:
+def _safe_code_from_generation(generation: Optional[GenerationPayload]) -> str:
+    if generation is None or generation.primary is None:
+        return ""
+    return str(generation.primary.content or "")
+
+
+def _build_patch(task: TaskObject, generation: Optional[GenerationPayload]) -> Dict[str, Any]:
     """
-    Backward compatible mapping:
-    - New keys: validation_filter, max_local_nodes, max_global_inline
-    - Legacy keys: enable_val_filter, max_nodes, max_depth (ignored or mapped)
+    Minimal runtime patch contract.
+
+    Keep patch shape simple for adapter compatibility.
     """
-    # new -> primary
-    validation_filter = reader_dict.get("validation_filter", None)
-    if validation_filter is None:
-        # legacy fallback
-        validation_filter = reader_dict.get("enable_val_filter", True)
-
-    max_local_nodes = reader_dict.get("max_local_nodes", None)
-    if max_local_nodes is None:
-        # legacy fallback: max_nodes was used as "reduce cap"
-        max_local_nodes = reader_dict.get("max_nodes", None)
-
-    return ReaderConfig(
-        enable_global=bool(reader_dict.get("enable_global", True)),
-        validation_filter=bool(validation_filter),
-        max_local_nodes=(int(max_local_nodes) if max_local_nodes is not None else None),
-        max_global_inline=(
-            int(reader_dict["max_global_inline"]) if reader_dict.get("max_global_inline", None) is not None else None
-        ),
-    )
-
-def _build_run_config(run_cfg_dict: Dict[str, Any], reader_cfg: ReaderConfig, model_cfg: Any) -> RunConfig:
-    run_dict = dict(run_cfg_dict.get("run") or {})
-    adapter_dict = dict(run_cfg_dict.get("adapter") or {})
-
-    return RunConfig(
-        seed=int(run_dict.get("seed", 0)),
-        max_rounds=int(run_dict.get("max_rounds", 2)),
-        use_verifier=bool(run_dict.get("use_verifier", True)),
-        outputs_dir=str(run_dict.get("outputs_dir", "outputs/runs")),
-        reader=reader_cfg,
-        model=model_cfg,
-        adapter=adapter_dict,  # snapshot-ish input, final snapshot from adapter.snapshot()
-    )
-
-
-def run(
-    *,
-    run_cfg_dict: Dict[str, Any],
-    task_adapter: TaskAdapter,
-    runtime: RuntimeAdapter,
-    llm: LLMClient,
-    memory: Optional[object] = None,
-) -> None:
-    """
-    Execute one task end-to-end, possibly with Generate->Verify->Revise loops.
-
-    memory is optional and treated as a passive object passed to generator.
-    (Working memory materialization is always done by io.write_artifacts.)
-    """
-    reader_cfg = _build_reader_config(run_cfg_dict.get("reader") or {})
-    run_cfg = _build_run_config(run_cfg_dict, reader_cfg, llm.cfg)
-
-    run_id = make_run_id()
-    run_dir = f"{run_cfg.outputs_dir.rstrip('/')}/{run_id}"
-
-    # 1) Build task + index
-    task, project_index = task_adapter.build_task()
-    adapter_snapshot = {
-        "task_adapter": task_adapter.snapshot(),
-        "runtime": runtime.snapshot(),
+    return {
+        "target_file": str(task.target.get("file") or ""),
+        "target_qualname": str(task.target.get("qualname") or ""),
+        "new_code": _safe_code_from_generation(generation),
     }
 
-    # 2) Beacon build (Dual Outputs)
-    build_res = logic_build(
-        task=task,
-        project_index=project_index,
-        config=run_cfg.reader,
-        seed=run_cfg.seed,
-        with_debug=False,
-    )
-    ir = build_res.ir
-    constraints = build_res.constraints
 
-    # 3+) Rounds
-    prev_code: Optional[str] = None
-    report: Optional[VerifierReport] = None
-    exec_result: Optional[ExecutionResult] = None
+@dataclass
+class Pipeline:
+    """
+    Final outer pipeline orchestrator.
 
-    for round_id in range(1, run_cfg.max_rounds + 1):
-        if round_id == 1 or not prev_code:
-            code = gen_mod.generate(task, ir, constraints, llm, memory=memory)
+    Responsibilities:
+    - build task/index via TaskAdapter
+    - run AgentWorkflow
+    - optionally run RuntimeAdapter on final generated code
+    - persist artifacts via io.py
+    """
+    llm: LLMClient
+    task_adapter: TaskAdapter
+    runtime_adapter: RuntimeAdapter
+    config: RunConfig
+    memory_store_path: str = "outputs/memory/experience.jsonl"
+    print_io: bool = False
+
+    def _print(self, message: str) -> None:
+        if self.print_io:
+            print(f"[Pipeline] {message}")
+
+    def run(self, *, run_id: Optional[str] = None) -> PipelineResult:
+        run_id = str(run_id or make_run_id())
+        run_dir = ensure_run_dir(self.config.outputs_dir, run_id)
+        self._print(f"start run_id={run_id}")
+        self._print(f"run_dir={run_dir}")
+
+        # --------------------------------------------------
+        # 1) adapter entry
+        # --------------------------------------------------
+        task, project_index = self.task_adapter.build_task()
+        adapter_snapshot = self.task_adapter.snapshot()
+        self._print(f"task built: task_id={task.id}")
+
+        # --------------------------------------------------
+        # 2) agent workflow
+        # --------------------------------------------------
+        workflow = AgentWorkflow(
+            llm=self.llm,
+            memory_store_path=self.memory_store_path,
+            print_io=self.print_io,
+        )
+        workflow_result: AgentWorkflowResult = workflow.run(
+            task=task,
+            project_index=project_index,
+            run_id=run_id,
+            run_config=self.config,
+        )
+        self._print(f"workflow finished success={workflow_result.success}")
+
+        # --------------------------------------------------
+        # 3) persist agent-side rounds first
+        # --------------------------------------------------
+        for round_result in workflow_result.rounds:
+            write_artifacts(
+                run_dir,
+                config=self.config,
+                adapter_snapshot=adapter_snapshot,
+                task=task,
+                ir=workflow_result.build.ir,
+                constraints=workflow_result.build.constraints,
+                round_id=round_result.round_index,
+                generation=round_result.generation,
+                format_check=round_result.format_check,
+                report=round_result.verifier,
+                beacon_usage=round_result.beacon_usage,
+                exec_result=None,
+                thoughts=workflow_result.thoughts if round_result.round_index == 1 else None,
+                scores=workflow_result.scores if round_result.round_index == 1 else None,
+                memory_read=workflow_result.memory_read if round_result.round_index == 1 else None,
+                memory_write=None,
+            )
+
+        # --------------------------------------------------
+        # 4) runtime execution on final generation
+        # --------------------------------------------------
+        final_exec: Optional[ExecResult] = None
+        final_generation = workflow_result.final_generation
+
+        if final_generation is not None:
+            patch = _build_patch(task, final_generation)
+            self._print("runtime start")
+            final_exec = self.runtime_adapter.run(task, patch)
+            self._print(
+                f"runtime finished status={final_exec.status} return_code={final_exec.return_code}"
+            )
+
+            final_round_id = len(workflow_result.rounds) if workflow_result.rounds else 1
+            write_artifacts(
+                run_dir,
+                config=self.config,
+                adapter_snapshot=adapter_snapshot,
+                task=task,
+                ir=workflow_result.build.ir,
+                constraints=workflow_result.build.constraints,
+                round_id=final_round_id,
+                generation=final_generation,
+                format_check=workflow_result.final_format_check,
+                report=workflow_result.final_verifier,
+                beacon_usage=workflow_result.final_beacon_usage,
+                exec_result=final_exec,
+                thoughts=None,
+                scores=None,
+                memory_read=None,
+                memory_write=workflow_result.memory_write,
+            )
         else:
-            directives = tuple(report.directives) if (report is not None) else tuple()
-            code = gen_mod.revise(task, ir, constraints, llm, directives, prev_code, memory=memory)
+            # still persist memory_write if no final generation exists
+            final_round_id = len(workflow_result.rounds) if workflow_result.rounds else 1
+            write_artifacts(
+                run_dir,
+                config=self.config,
+                adapter_snapshot=adapter_snapshot,
+                task=task,
+                ir=workflow_result.build.ir,
+                constraints=workflow_result.build.constraints,
+                round_id=final_round_id,
+                generation=None,
+                format_check=workflow_result.final_format_check,
+                report=workflow_result.final_verifier,
+                beacon_usage=workflow_result.final_beacon_usage,
+                exec_result=None,
+                thoughts=None,
+                scores=None,
+                memory_read=None,
+                memory_write=workflow_result.memory_write,
+            )
 
-        # 4) Verify (optional)
-        report = None
-        if run_cfg.use_verifier:
-            report = ver_mod.check(code, constraints)
+        # --------------------------------------------------
+        # 5) final success
+        # --------------------------------------------------
+        success = bool(workflow_result.success)
+        if final_exec is not None:
+            success = success and (final_exec.status == "pass")
 
-        # Persist artifacts for this round before running (so we can replay even if runtime crashes)
-        write_artifacts(
-            run_dir=run_dir,
-            config=run_cfg,
-            adapter_snapshot=adapter_snapshot,
+        self._print(f"pipeline done success={success}")
+
+        return PipelineResult(
             task=task,
-            ir=ir,
-            constraints=constraints,
-            code=code,
-            report=report,
-            exec_result=None,
-            round_id=round_id,
+            build=workflow_result.build,
+            rounds=workflow_result.rounds,
+            final_generation=workflow_result.final_generation,
+            final_verifier=workflow_result.final_verifier,
+            final_exec=final_exec,
+            success=success,
+            meta={
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "adapter_snapshot": adapter_snapshot,
+                "workflow_meta": dict(workflow_result.meta or {}),
+                "runtime_snapshot": self.runtime_adapter.snapshot(),
+            },
         )
 
-        # If verifier failed, go next round to revise (no runtime run)
-        if run_cfg.use_verifier and report is not None and not report.ok:
-            prev_code = code
-            continue
 
-        # 5) Runtime run
-        patch = {
-            "target_file": task.target.get("file"),
-            "target_qualname": task.target.get("qualname"),
-            "new_code": code,
-        }
-        exec_result = runtime.run(task, patch)
-
-        # Persist runtime artifacts
-        write_artifacts(
-            run_dir=run_dir,
-            config=run_cfg,
-            adapter_snapshot=adapter_snapshot,
-            task=task,
-            ir=ir,
-            constraints=constraints,
-            code=code,
-            report=report,
-            exec_result=exec_result,
-            round_id=round_id,
-        )
-
-        # Stop early on success
-        if exec_result is not None and exec_result.status == "pass":
-            break
-
-        prev_code = code
+def run_pipeline(
+    *,
+    llm: LLMClient,
+    task_adapter: TaskAdapter,
+    runtime_adapter: RuntimeAdapter,
+    config: RunConfig,
+    run_id: Optional[str] = None,
+    memory_store_path: str = "outputs/memory/experience.jsonl",
+    print_io: bool = False,
+) -> PipelineResult:
+    """
+    Convenience entry for direct pipeline execution.
+    """
+    pipeline = Pipeline(
+        llm=llm,
+        task_adapter=task_adapter,
+        runtime_adapter=runtime_adapter,
+        config=config,
+        memory_store_path=memory_store_path,
+        print_io=print_io,
+    )
+    return pipeline.run(run_id=run_id)

@@ -1,0 +1,20 @@
+{
+  "constraints": [
+    "must_define:compute_discounted_total",
+    "must_be_python",
+    "deterministic_only",
+    "must_call:compute_subtotal",
+    "must_call:compute_discount_rate",
+    "no_network",
+    "no_file_io",
+    "return_rounded_float_2dp"
+  ],
+  "task_id": "codereval_like_full_001",
+  "tests": [
+    {
+      "call": "compute_discounted_total(sample_items(), 'gold', 'SAVE10')",
+      "expected": 172.5,
+      "name": "discounted_total_gold_save10"
+    }
+  ]
+}
