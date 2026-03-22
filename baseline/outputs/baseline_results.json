@@ -1,0 +1,1040 @@
+[
+  {
+    "_id": "62e60f43d76274f8a4026e28",
+    "generate_results": [
+      "def hydrate_time(nanoseconds, tz):\n    seconds = nanoseconds // 1_000_000_000\n    ns_remainder = nanoseconds % 1_000_000_000\n    microseconds = ns_remainder // 1_000\n\n    total_seconds_in_day = seconds % 86400\n\n    hours, remainder = divmod(total_seconds_in_day, 3600)\n    minutes, seconds = divmod(remainder, 60)\n\n    naive_dt = datetime.datetime(1970, 1, 1, int(hours), int(minutes), int(seconds), int(microseconds))\n\n    if tz is not None:\n        if isinstance(tz, str):\n            tz = pytz.timezone(tz)\n        aware_dt = tz.localize(naive_dt)\n    else:\n        aware_dt = pytz.utc.localize(naive_dt)\n\n    return aware_dt.time()"
+    ]
+  },
+  {
+    "_id": "62e60f3bd76274f8a4026e10",
+    "generate_results": [
+      "def dehydrate_timedelta(value):\n    return Structure(\"Duration\", [value.days, value.seconds, value.microseconds])"
+    ]
+  },
+  {
+    "_id": "62e60f37d76274f8a4026dfd",
+    "generate_results": [
+      "def dehydrate_time(value):\n    return Structure(\"Time\", [value.epoch_nanoseconds])"
+    ]
+  },
+  {
+    "_id": "62e60f33d76274f8a4026de9",
+    "generate_results": [
+      "def dehydrate_point(value):\n    coords = value._as_tuple()\n    srid = value.srid\n    if len(coords) == 2:\n        return {\"x\": coords[0], \"y\": coords[1], \"srid\": srid}\n    else:\n        return {\"x\": coords[0], \"y\": coords[1], \"z\": coords[2], \"srid\": srid}"
+    ]
+  },
+  {
+    "_id": "62e60ed4d76274f8a4026da0",
+    "generate_results": [
+      "def keys(self):\n    \"\"\"Return the keys of the record.\n    :return: list of key names\n    \"\"\"\n    return list(self.__keys)"
+    ]
+  },
+  {
+    "_id": "62e60e49d76274f8a4026d25",
+    "generate_results": [
+      "def unit_of_work(metadata=None, timeout=None):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            return func(*args, **kwargs)\n        if metadata is not None:\n            wrapper.metadata = metadata\n        else:\n            wrapper.metadata = {}\n        wrapper.timeout = timeout\n        return wrapper\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62e60e05d76274f8a4026cfd",
+    "generate_results": [
+      "def index(self, key):\n    for i, k in enumerate(self.keys()):\n        if k == key:\n            return i\n    raise ValueError(\"Key not found\")"
+    ]
+  },
+  {
+    "_id": "62e60b10d76274f8a4026ccd",
+    "generate_results": [
+      "def data(self, keys=None):\n    if keys is None:\n        keys = self.keys()\n    result = {}\n    for key in keys:\n        if isinstance(key, int):\n            if key < 0 or key >= len(self):\n                raise IndexError(f\"Index {key} out of bounds\")\n            key_name = self.keys()[key]\n            result[key_name] = self[key_name]\n        else:\n            result[key] = self.get(key)\n    return result"
+    ]
+  },
+  {
+    "_id": "62e6087bd76274f8a4026bfa",
+    "generate_results": [
+      "def pop_u16(self):\n    low = self.data.pop()\n    high = self.data.pop()\n    return (high << 8) | low"
+    ]
+  },
+  {
+    "_id": "62e6087ad76274f8a4026bf2",
+    "generate_results": [
+      "def discard(self, n=-1, qid=-1, dehydration_hooks=None, hydration_hooks=None, handlers=None):\n    self._append(b\"DISCARD\", {\"n\": n, \"qid\": qid})\n    return self.responses.Response(self, handlers, dehydration_hooks, hydration_hooks)"
+    ]
+  },
+  {
+    "_id": "62e60723d76274f8a4026b75",
+    "generate_results": [
+      "def round_half_to_even(n):\n    return round(n)"
+    ]
+  },
+  {
+    "_id": "62e60707d76274f8a4026b69",
+    "generate_results": [
+      "def point_type(name, fields, srid_map):\n    srid = int(name.split('_')[-1])\n    if srid in srid_table:\n        return srid_table[srid]\n    with srid_table_lock:\n        if srid in srid_table:\n            return srid_table[srid]\n        base_class = srid_map[srid]\n        def __init__(self, *args):\n            if len(args) != len(fields):\n                raise TypeError(f\"Expected {len(fields)} arguments, got {len(args)}\")\n            super().__init__(srid)\n            for i, field in enumerate(fields):\n                setattr(self, f\"_{field}\", args[i])\n        attrs = {\n            \"__init__\": __init__,\n            \"fields\": fields\n        }\n        for field in fields:\n            attrs[field] = property(f\"_{field}\")\n        new_class = type(name, (base_class,), attrs)\n        srid_table[srid] = new_class\n        return new_class"
+    ]
+  },
+  {
+    "_id": "62e5dc9ed76274f8a4026b5b",
+    "generate_results": [
+      "from functools import wraps\n\ndef deprecated(message):\n    def decorator(func):\n        @wraps(func)\n        def wrapper(*args, **kwargs):\n            deprecation_warn(message, stack_level=2)\n            return func(*args, **kwargs)\n        return wrapper\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62e4fc3c85ea98643089041e",
+    "generate_results": [
+      "import rpy2.robjects as ro\n\ndef _inline_r_setup():\n    \"\"\"\n    Some behaviour of R cannot be configured via env variables, but can\n    only be configured via R options once R has started. These are set here.\n    \"\"\"\n    ro.r(\"\"\"\n    options(stringsAsFactors = FALSE)\n    options(warn = 1)\n    options(max.print = 1000)\n    \"\"\")"
+    ]
+  },
+  {
+    "_id": "62e4fbda85ea986430890405",
+    "generate_results": [
+      "import sys\nimport os\nimport subprocess\nimport pty\nfrom concurrent.futures import ThreadPoolExecutor\n\ndef xargs(command, color=False, target_concurrency=1):\n    lines = [line.rstrip('\\n') for line in sys.stdin if line.strip()]\n    if not lines:\n        return\n\n    batches = [[line] for line in lines]\n\n    def run_batch(batch):\n        full_cmd = command + batch\n        if os.name == 'posix' and color:\n            pty.spawn(full_cmd)\n        else:\n            subprocess.run(full_cmd, check=False)\n\n    with ThreadPoolExecutor(max_workers=target_concurrency) as executor:\n        futures = [executor.submit(run_batch, batch) for batch in batches]\n        for future in futures:\n            future.result()"
+    ]
+  },
+  {
+    "_id": "62e4fbda85ea986430890403",
+    "generate_results": [
+      "def _shuffled(seq):\n    result = list(seq)\n    random.Random(FIXED_RANDOM_SEED).shuffle(result)\n    return result"
+    ]
+  },
+  {
+    "_id": "62e4fb6585ea98643089032b",
+    "generate_results": [
+      "def parse_version(version_str):\n    return tuple(int(part) for part in version_str.split('.'))"
+    ]
+  },
+  {
+    "_id": "62e4fb4d85ea9864308902e7",
+    "generate_results": [
+      "def normalize_cmd(cmd):\n    if not cmd:\n        return cmd\n    first = cmd[0]\n    if os.path.isabs(first):\n        normalized_first = normexe(first)\n    else:\n        normalized_first = find_executable(first, _environ)\n        if normalized_first is None:\n            return cmd\n        normalized_first = normexe(normalized_first)\n    return [normalized_first] + cmd[1:]"
+    ]
+  },
+  {
+    "_id": "62b8d24048ba5a41d1c3f49f",
+    "generate_results": [
+      "import functools\nimport time\nfrom threading import RLock\nfrom collections import OrderedDict\n\n\ndef ttl_cache(maxsize=128, ttl=60):\n    def wrapper(func):\n        cache = OrderedDict()\n        lock = RLock()\n\n        @functools.wraps(func)\n        def wrapped(*args, **kwargs):\n            key = (args, frozenset(kwargs.items()))\n            with lock:\n                if key in cache:\n                    value, timestamp = cache[key]\n                    if time.time() < timestamp + ttl:\n                        # Move to end to mark as recently used\n                        cache.move_to_end(key)\n                        return value\n                    else:\n                        # Expire the cache entry\n                        del cache[key]\n\n                result = func(*args, **kwargs)\n                # Remove the least recently used item if needed\n                if len(cache) >= maxsize:\n                    cache.popitem(last=False)\n                # Add new result to cache\n                cache[key] = (result, time.time())\n                return result\n\n        return wrapped\n    return wrapper"
+    ]
+  },
+  {
+    "_id": "62b8d23b48ba5a41d1c3f49a",
+    "generate_results": [
+      "def mru_cache(maxsize=128):\n    def decorator(func):\n        import functools\n        import collections\n\n        cache = {}\n        history = collections.deque()\n\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            key = (args, tuple(kwargs.items()))\n            if key in cache:\n                # Move the accessed item to the end of the deque\n                try:\n                    history.remove(key)\n                except ValueError:\n                    pass\n                history.append(key)\n                return cache[key]\n            result = func(*args, **kwargs)\n            if len(cache) >= maxsize:\n                # Remove the most recently used item (last in deque)\n                while history:\n                    k = history.pop()\n                    if k in cache:\n                        del cache[k]\n                        break\n            cache[key] = result\n            history.append(key)\n            return result\n\n        return wrapper\n\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62b8d23948ba5a41d1c3f498",
+    "generate_results": [
+      "from collections import OrderedDict\nimport functools\n\ndef lru_cache(maxsize):\n    if maxsize is not None and maxsize < 0:\n        raise ValueError(\"maxsize must be positive or None\")\n    cache = OrderedDict()\n\n    def decorator(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            if maxsize == 0:\n                return func(*args, **kwargs)\n            key = (args, tuple(sorted(kwargs.items())))\n            if key in cache:\n                cache.move_to_end(key, last=True)\n                return cache[key]\n            result = func(*args, **kwargs)\n            if maxsize is not None and len(cache) >= maxsize:\n                cache.popitem(last=False)\n            cache[key] = result\n            return result\n        return wrapper\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62b8d22f48ba5a41d1c3f488",
+    "generate_results": [
+      "def popitem(self):\n    if not self.__order:\n        raise KeyError(\"popitem(): cache is empty\")\n    key = self.__order[0]\n    value = self[key]\n    del self[key]\n    return (key, value)"
+    ]
+  },
+  {
+    "_id": "62b8d22a48ba5a41d1c3f47e",
+    "generate_results": [
+      "def setdefault(self, k, d=None):\n    if k in self:\n        return self[k]\n    self[k] = d\n    return d"
+    ]
+  },
+  {
+    "_id": "62b8d22948ba5a41d1c3f47c",
+    "generate_results": [
+      "def get(self, k, d=None):\n    if k in self:\n        return self[k]\n    return d"
+    ]
+  },
+  {
+    "_id": "62b8d22548ba5a41d1c3f472",
+    "generate_results": [
+      "def cachedmethod(func):\n    def wrapper(*args, **kwargs):\n        instance = args[0]\n        cache_name = f'_cachedmethod_{func.__name__}'\n        cache = getattr(instance, cache_name, None)\n        if cache is None:\n            cache = {}\n            setattr(instance, cache_name, cache)\n        key = (args[1:], frozenset(kwargs.items()))\n        if key in cache:\n            return cache[key]\n        result = func(*args, **kwargs)\n        cache[key] = result\n        return result\n    return wrapper"
+    ]
+  },
+  {
+    "_id": "62b8c517e0d34b282c18122e",
+    "generate_results": [
+      "import traceback\nimport os\n\ndef extostr(cls, e, max_level=30, max_path_level=5):\n    tb = traceback.TracebackException(type(e), e, e.__traceback__)\n    lines = tb.format(limit=max_level)\n    for i in range(len(lines)):\n        if lines[i].startswith('File '):\n            start = lines[i].find('\"') + 1\n            end = lines[i].find('\"', start)\n            if start > 0 and end > start:\n                original_path = lines[i][start:end]\n                parts = []\n                path = original_path\n                while True:\n                    head, tail = os.path.split(path)\n                    if tail == path:\n                        parts.append(path)\n                        break\n                    parts.append(tail)\n                    path = head\n                parts.reverse()\n                if len(parts) > max_path_level:\n                    truncated_parts = parts[-max_path_level:]\n                    if os.path.isabs(original_path):\n                        truncated_path = '.../' + os.path.join(*truncated_parts)\n                    else:\n                        truncated_path = '.../' + os.path.join(*truncated_parts)\n                    lines[i] = lines[i][:start] + truncated_path + lines[i][end+1:]\n    return ''.join(lines)"
+    ]
+  },
+  {
+    "_id": "62b8bbbfe0d34b282c181210",
+    "generate_results": [
+      "import logging\n\ndef append_text_to_file(self, file_name, text_buffer, encoding, overwrite):\n    try:\n        bin_buf = text_buffer.encode(encoding)\n    except UnicodeEncodeError as e:\n        logging.error(\"Failed to encode text buffer: %s\", e)\n        return -1\n    try:\n        if overwrite:\n            with open(file_name, 'wb') as f:\n                return f.write(bin_buf)\n        else:\n            return self.append_binary_to_file(file_name, bin_buf)\n    except Exception as e:\n        logging.error(\"Error writing to file: %s\", e)\n        return -1"
+    ]
+  },
+  {
+    "_id": "62b8bbbfe0d34b282c18120f",
+    "generate_results": [
+      "import codecs\nimport os\nimport logging\n\nlogger = logging.getLogger(__name__)\n\ndef file_to_textbuffer(self, file_name, encoding):\n    if not self.is_file_exist(file_name):\n        logger.error(f\"File {file_name} does not exist.\")\n        return None\n    try:\n        with codecs.open(file_name, 'r', encoding=encoding) as f:\n            text_buffer = f.read()\n        return text_buffer\n    except Exception as e:\n        logger.error(f\"Error reading file {file_name}: {e}\")\n        return None"
+    ]
+  },
+  {
+    "_id": "62b8bbbce0d34b282c18120d",
+    "generate_results": [
+      "import os\n\ndef is_file_exist(file_name):\n    return os.path.isfile(file_name)"
+    ]
+  },
+  {
+    "_id": "62b8b99de0d34b282c1811f8",
+    "generate_results": [
+      "def _reset_logging():\n    logging.getLogger().handlers.clear()\n    logging.basicConfig(level=logging.WARNING)"
+    ]
+  },
+  {
+    "_id": "62b8b58deb7e40a82d2d1269",
+    "generate_results": [
+      "def directlyProvidedBy(object):\n    spec = getObjectSpecification(object)\n    return spec.direct"
+    ]
+  },
+  {
+    "_id": "62b8b559eb7e40a82d2d11f8",
+    "generate_results": [
+      "def minimalBases(bases):\n    seen = set()\n    unique_bases = []\n    for c in bases:\n        if c not in seen:\n            seen.add(c)\n            unique_bases.append(c)\n    result = []\n    for c in unique_bases:\n        for d in unique_bases:\n            if d is c:\n                continue\n            if issubclass(c, d):\n                break\n        else:\n            result.append(c)\n    return result"
+    ]
+  },
+  {
+    "_id": "62b8b4b9eb7e40a82d2d1134",
+    "generate_results": [
+      "def namesAndDescriptions(self, all=False):\n    names = self.names(all)\n    return [(name, self.getDescriptionFor(name)) for name in names]"
+    ]
+  },
+  {
+    "_id": "62b8b416eb7e40a82d2d1129",
+    "generate_results": [
+      "def names(self):\n    return self.__attrs"
+    ]
+  },
+  {
+    "_id": "62b8b3d6eb7e40a82d2d111c",
+    "generate_results": [
+      "from zope.interface import Interface\nfrom zope.interface.declarations import BuiltinImplementationSpecifications\n\ndef _normalizeargs(sequence, output):\n    for item in sequence:\n        if isinstance(item, Interface):\n            output.append(item)\n        elif isinstance(item, tuple):\n            _normalizeargs(item, output)\n        elif isinstance(item, BuiltinImplementationSpecifications):\n            for iface in item:\n                output.append(iface)\n        else:\n            for iface in item.__implemented__:\n                output.append(iface)"
+    ]
+  },
+  {
+    "_id": "62b8b3d4eb7e40a82d2d110f",
+    "generate_results": [
+      "def _should_attempt_c_optimizations():\n    return not (PYPY or os.environ.get('PURE_PYTHON'))"
+    ]
+  },
+  {
+    "_id": "62b8b3d4eb7e40a82d2d110e",
+    "generate_results": [
+      "import os\n\ndef _c_optimizations_ignored():\n    return os.environ.get(\"PURE_PYTHON\", \"0\") != \"0\""
+    ]
+  },
+  {
+    "_id": "62b8b3d4eb7e40a82d2d110d",
+    "generate_results": [
+      "def _c_optimizations_required():\n    return not PURE_PYTHON"
+    ]
+  },
+  {
+    "_id": "62b87b989a0c4fa8b80b35ee",
+    "generate_results": [
+      "import copy\n\ndef reset(self):\n    self._cur_context = {}\n    if self._initial_bins is not None:\n        self.bins = copy.deepcopy(self._initial_bins)\n    else:\n        self.bins = self._make_bins()\n        self.fill(self._initial_value)"
+    ]
+  },
+  {
+    "_id": "62b87b859a0c4fa8b80b35d7",
+    "generate_results": [
+      "import warnings\n\ndef to_csv(self, separator=',', header=None):\n    warnings.warn(\n        \"to_csv is deprecated since Lena 0.5. Iterables are converted to tables.\",\n        DeprecationWarning, stacklevel=2\n    )\n    lines = []\n    if header is not None:\n        lines.append(header)\n    for point in self.points():\n        parts = []\n        for coord in point[0]:\n            parts.append(str(coord))\n        for val in point[1]:\n            parts.append(str(val))\n        lines.append(separator.join(parts))\n    return '\\n'.join(lines)"
+    ]
+  },
+  {
+    "_id": "62b87b839a0c4fa8b80b35cb",
+    "generate_results": [
+      "def _get_err_indices(self, coord_name):\n    error_names = self._parsed_error_names.get(coord_name, [])\n    return [i for i, field in enumerate(self.field_names) if field in error_names]"
+    ]
+  },
+  {
+    "_id": "62b87b7e9a0c4fa8b80b35bc",
+    "generate_results": [
+      "def _update_context(self, context):\n    if not hasattr(context, 'error'):\n        context.error = {}\n    for coord in self._coord_names:\n        err_indices = self._get_err_indices(coord)\n        for i, idx in enumerate(err_indices):\n            if idx is not None:\n                error_key = f\"{['x', 'y', 'z'][i]}_low\" if i < len(err_indices) // 2 else f\"{['x', 'y', 'z'][i - len(err_indices) // 2]}_high\"\n                if error_key not in context.error:\n                    context.error[error_key] = {'index': idx}\n                else:\n                    context.error[error_key]['index'] = idx"
+    ]
+  },
+  {
+    "_id": "62b87b4f9a0c4fa8b80b3580",
+    "generate_results": [
+      "def integral(bins, edges):\n    total = 0.0\n    for bin_val, bin_edges in iter_bins_with_edges(bins, edges):\n        volume = 1.0\n        for edges_pair in bin_edges:\n            volume *= edges_pair[1] - edges_pair[0]\n        total += bin_val * volume\n    return total"
+    ]
+  },
+  {
+    "_id": "62b87b199a0c4fa8b80b354e",
+    "generate_results": [
+      "def is_fill_request_seq(seq):\n    if is_source(seq):\n        return False\n    for el in seq:\n        if is_fill_request_el(el):\n            return True\n    return False"
+    ]
+  },
+  {
+    "_id": "62b87b099a0c4fa8b80b3538",
+    "generate_results": [
+      "def is_fill_request_el(obj):\n    return hasattr(obj, 'fill') and callable(obj.fill) and hasattr(obj, 'request') and callable(obj.request)"
+    ]
+  },
+  {
+    "_id": "62b87af99a0c4fa8b80b3524",
+    "generate_results": [
+      "def is_run_el(obj):\n    return hasattr(type(obj), 'run') and callable(getattr(type(obj), 'run'))"
+    ]
+  },
+  {
+    "_id": "62b87af69a0c4fa8b80b351a",
+    "generate_results": [
+      "def is_fill_compute_el(obj):\n    return hasattr(obj, 'fill') and callable(obj.fill) and hasattr(obj, 'compute') and callable(obj.compute)"
+    ]
+  },
+  {
+    "_id": "62b87af19a0c4fa8b80b34f7",
+    "generate_results": [
+      "import copy\n\ndef difference(d1, d2, level=-1):\n    if not isinstance(d1, dict) or not isinstance(d2, dict):\n        return {}\n\n    result = {}\n    for key in d1:\n        if key not in d2:\n            result[key] = d1[key]\n        else:\n            val1 = d1[key]\n            val2 = d2[key]\n            if isinstance(val1, dict) and isinstance(val2, dict) and (level == -1 or level > 1):\n                sub_diff = difference(val1, val2, level=(level - 1) if level != -1 else -1)\n                if sub_diff:\n                    result[key] = sub_diff\n            elif val1 != val2:\n                result[key] = val1\n    return result"
+    ]
+  },
+  {
+    "_id": "62b87af09a0c4fa8b80b34f1",
+    "generate_results": [
+      "import bisect\n\nclass Histogram:\n    def fill(self, coord, weight=1.0):\n        if len(coord) != self.dim:\n            return\n        for i in range(self.dim):\n            x = coord[i]\n            edges_i = self.edges[i]\n            if x < edges_i[0] or x >= edges_i[-1]:\n                return\n        indices = []\n        for i in range(self.dim):\n            x = coord[i]\n            edges_i = self.edges[i]\n            idx = bisect.bisect_right(edges_i, x) - 1\n            indices.append(idx)\n        bin_index = tuple(indices)\n        self.bins[bin_index] += weight"
+    ]
+  },
+  {
+    "_id": "62b86a9eb4d922cb0e688d25",
+    "generate_results": [
+      "import re\n\ndef _get_resource_name_regex():\n    return re.compile(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')"
+    ]
+  },
+  {
+    "_id": "62b86a4fb4d922cb0e688cf8",
+    "generate_results": [
+      "import re\n\nclass ValidationError(Exception):\n    pass\n\ndef validate_value(value):\n    \"\"\"\n    Validate the given value against the corresponding regular expression.\n\n    Args:\n        value: the string to validate\n\n    Raises:\n        ValidationError: if the given value is not conform to the regular expression.\n    \"\"\"\n    _label_value_regex = re.compile(r'^[a-zA-Z0-9_\\.\\/-]*$')\n    if not _label_value_regex.fullmatch(value):\n        raise ValidationError(f\"Value '{value}' is not valid.\")"
+    ]
+  },
+  {
+    "_id": "62b86a4fb4d922cb0e688cf7",
+    "generate_results": [
+      "def validate_key(key):\n    if not _label_key_regex.match(key):\n        raise ValidationError(\"Key does not conform to the regular expression\")"
+    ]
+  },
+  {
+    "_id": "62b86a01b4d922cb0e688ccc",
+    "generate_results": [
+      "import copy\n\ndef generate_default_observer_schema_dict(manifest_dict, first_level=False):\n    new_dict = {}\n    if first_level:\n        identifying_fields = [\"metadata\", \"kind\", \"apiVersion\"]\n        for key in manifest_dict:\n            if key in identifying_fields:\n                new_dict[key] = copy.deepcopy(manifest_dict[key])\n            else:\n                if isinstance(manifest_dict[key], dict):\n                    new_dict[key] = generate_default_observer_schema_dict(\n                        manifest_dict[key]\n                    )\n                elif isinstance(manifest_dict[key], list):\n                    new_dict[key] = generate_default_observer_schema_list(\n                        manifest_dict[key]\n                    )\n                else:\n                    new_dict[key] = None\n    else:\n        for key in manifest_dict:\n            if isinstance(manifest_dict[key], dict):\n                new_dict[key] = generate_default_observer_schema_dict(\n                    manifest_dict[key]\n                )\n            elif isinstance(manifest_dict[key], list):\n                new_dict[key] = generate_default_observer_schema_list(\n                    manifest_dict[key]\n                )\n            else:\n                new_dict[key] = None\n    return new_dict\n\n\ndef generate_default_observer_schema_list(manifest_list):\n    new_list = []\n    for item in manifest_list:\n        if isinstance(item, dict):\n            new_list.append(generate_default_observer_schema_dict(item))\n        elif isinstance(item, list):\n            new_list.append(generate_default_observer_schema_list(item))\n        else:\n            new_list.append(None)\n    return new_list"
+    ]
+  },
+  {
+    "_id": "62b869eab4d922cb0e688cc5",
+    "generate_results": [
+      "def update_last_applied_manifest_dict_from_resp(last_applied_manifest, observer_schema, response):\r\n    for key in observer_schema:\r\n        if key not in response:\r\n            raise KeyError(f\"Key '{key}' not present in Kubernetes response\")\r\n        if key not in last_applied_manifest:\r\n            last_applied_manifest[key] = response[key]\r\n        else:\r\n            schema_val = observer_schema[key]\r\n            if isinstance(schema_val, dict):\r\n                update_last_applied_manifest_dict_from_resp(\r\n                    last_applied_manifest[key], schema_val, response[key]\r\n                )\r\n            elif isinstance(schema_val, list):\r\n                update_last_applied_manifest_list_from_resp(\r\n                    last_applied_manifest[key], schema_val, response[key]\r\n                )"
+    ]
+  },
+  {
+    "_id": "62b869eab4d922cb0e688cbf",
+    "generate_results": [
+      "import logging\nimport asyncio\nfrom collections import defaultdict\nfrom typing import Any, Dict, List, Optional, Union\n\nlogger = logging.getLogger(__name__)\n\ndef generate_default_observer_schema(app: Any) -> None:\n    if not app.spec.manifest:\n        return\n\n    for resource in app.spec.manifest:\n        if \"observer_schema\" in resource:\n            continue\n\n        if isinstance(resource, dict):\n            observer_schema = generate_default_observer_schema_dict(resource, first_level=True)\n        elif isinstance(resource, list):\n            observer_schema = generate_default_observer_schema_list(resource)\n        else:\n            continue\n\n        resource[\"observer_schema\"] = observer_schema\n\n\ndef generate_default_observer_schema_dict(manifest_dict: Dict[str, Any], first_level: bool = False) -> Dict[str, Any]:\n    observer_schema = {}\n\n    for key, value in manifest_dict.items():\n        if key == \"status\":\n            continue\n\n        if isinstance(value, dict):\n            observer_schema[key] = generate_default_observer_schema_dict(value, first_level=False)\n        elif isinstance(value, list):\n            observer_schema[key] = generate_default_observer_schema_list(value)\n        else:\n            observer_schema[key] = type(value).__name__\n\n    return observer_schema\n\n\ndef generate_default_observer_schema_list(manifest_list: List[Any]) -> List[Dict[str, Any]]:\n    observer_schemas = []\n\n    for item in manifest_list:\n        if isinstance(item, dict):\n            observer_schemas.append(generate_default_observer_schema_dict(item, first_level=False))\n        elif isinstance(item, list):\n            observer_schemas.append(generate_default_observer_schema_list(item))\n        else:\n            observer_schemas.append(type(item).__name__)\n\n    return observer_schemas"
+    ]
+  },
+  {
+    "_id": "62b43427903eeb48555d3ea5",
+    "generate_results": [
+      "from collections.abc import Mapping, Sequence\n\ndef format(self, sql, params):\n    if self._in_obj.is_named:\n        if not isinstance(params, Mapping):\n            raise TypeError(\"Params must be a Mapping for named in-style parameters.\")\n    else:\n        if not isinstance(params, Sequence):\n            raise TypeError(\"Params must be a Sequence for ordinal in-style parameters.\")\n    original_is_bytes = isinstance(sql, bytes)\n    if original_is_bytes:\n        sql = sql.decode(self._BYTES_ENCODING)\n    formatted_sql, formatted_params = self._converter.convert(sql, params)\n    if original_is_bytes:\n        formatted_sql = formatted_sql.encode(self._BYTES_ENCODING)\n    return formatted_sql, formatted_params"
+    ]
+  },
+  {
+    "_id": "62b43428903eeb48555d3eaa",
+    "generate_results": [
+      "def formatmany(self, sql, many_params):\n    return self._converter.convert_many(sql, many_params)"
+    ]
+  },
+  {
+    "_id": "62b45df05108cfac7f2109ce",
+    "generate_results": [
+      "def validate(self, path):\n    if not self.initialize(path):\n        return False\n    if not self.validate_object_root(self.version_dirs, already_checked=set()):\n        return False\n    if not self.validate_inventory(self.inv_file, path, extract_spec_version=True):\n        return False\n    if not self.validate_extensions_dir():\n        return False\n    if not self.validate_version_inventories(self.version_dirs):\n        return False\n    if not self.validate_content(self.inventory, self.version_dirs, {}, {}):\n        return False\n    if not self.validate_inventory_digest_match(self.inv_file, self.inv_digest_file):\n        return False\n    return True"
+    ]
+  },
+  {
+    "_id": "62b45df15108cfac7f2109dc",
+    "generate_results": [
+      "def status_str(self, prefix=\"\"):\n    result = []\n    for code in sorted(self.messages):\n        msg = self.error_or_warning(code, self.messages[code])\n        if msg:\n            result.append(f\"{prefix}{msg}\")\n    return \"\\n\".join(result)"
+    ]
+  },
+  {
+    "_id": "62b45df15108cfac7f2109dd",
+    "generate_results": [
+      "def status_str(self, prefix=None):\n    return self.log.status_str(prefix)"
+    ]
+  },
+  {
+    "_id": "62b45e135108cfac7f2109f4",
+    "generate_results": [
+      "def is_valid(identifier):\n    \"\"\"Return True if identifier is valid, always True in this base implementation.\"\"\"\n    return True"
+    ]
+  },
+  {
+    "_id": "62b45e145108cfac7f210a09",
+    "generate_results": [
+      "def check_digests_present_and_used(self, manifest_files, digests_used):\n    if not self.lax_digests:\n        for path, entry in manifest_files.items():\n            digest = entry['digest']\n            match = self.digest_regex.match(digest)\n            if not match:\n                continue\n            algorithm = match.group(1)\n            if algorithm not in digests_used:\n                self.error('digest_algorithm_not_used', path=path, algorithm=algorithm)"
+    ]
+  },
+  {
+    "_id": "62b45e165108cfac7f210a16",
+    "generate_results": [
+      "def validate_as_prior_version(self, prior):\n    if prior.spec_version not in self.spec_versions_supported:\n        return self.error(\"prior_spec_version_not_supported\")\n    if self.head != prior.id:\n        return self.error(\"head_does_not_match_prior_id\")\n    if self.content_directory != prior.content_directory:\n        return self.error(\"content_directory_mismatch\")\n    if len(self.all_versions) != len(prior.all_versions) + 1:\n        return self.error(\"version_sequence_length_mismatch\")\n    for i in range(len(prior.all_versions)):\n        if self.all_versions[i] != prior.all_versions[i]:\n            return self.error(\"version_sequence_mismatch_at_index\", i=i)\n    self.check_content_paths_map_to_versions(prior.manifest_files, self.all_versions)\n    self.check_digests_present_and_used(prior.manifest_files, self.digests_used)\n    for version in prior.all_versions:\n        self.compare_states_for_version(prior, version)"
+    ]
+  },
+  {
+    "_id": "62b45e165108cfac7f210a17",
+    "generate_results": [
+      "def get_logical_path_map(self):\n    path_map = {}\n    for version in self.inventory.state:\n        state = self.inventory.state[version]\n        for logical_path, content_file in state.items():\n            if logical_path not in path_map:\n                path_map[logical_path] = set()\n            path_map[logical_path].add(content_file)\n    return path_map"
+    ]
+  },
+  {
+    "_id": "62b463153879012d1948149a",
+    "generate_results": [
+      "import os\nimport logging\nimport zipfile\nfrom packtools.sps.utils import select_filenames_by_prefix, match_file_by_prefix\n\nlogger = logging.getLogger(__name__)\n\n\ndef _group_files_by_xml_filename(xml_filename, files):\n    groups = {}\n    for file in files:\n        prefix = os.path.splitext(os.path.basename(xml_filename))[0]\n        if match_file_by_prefix(prefix, file):\n            if prefix not in groups:\n                groups[prefix] = []\n            groups[prefix].append(file)\n    return groups"
+    ]
+  },
+  {
+    "_id": "62b463153879012d1948149c",
+    "generate_results": [
+      "import os\n\ndef select_filenames_by_prefix(prefix, files):\n    selected_files = []\n    for file_path in files:\n        if os.path.basename(file_path).startswith(prefix):\n            selected_files.append(file_path)\n    return selected_files"
+    ]
+  },
+  {
+    "_id": "62b463153879012d194814a1",
+    "generate_results": [
+      "def add_rendition(self, lang, file_path):\n    self._renditions[lang] = self.file_path(file_path)"
+    ]
+  },
+  {
+    "_id": "62b463163879012d194814a2",
+    "generate_results": [
+      "def add_asset(self, basename, file_path):\n    self._assets[basename] = file_path"
+    ]
+  },
+  {
+    "_id": "62b463163879012d194814a4",
+    "generate_results": [
+      "import zipfile\n\ndef _explore_zipfile(zip_path):\n    with zipfile.ZipFile(zip_path, 'r') as zip_file:\n        files = [f for f in zip_file.namelist() if not f.endswith('/')]\n        xmls = [f for f in files if f.endswith('.xml')]\n        return _group_files_by_xml_filename(zip_path, xmls, files)"
+    ]
+  },
+  {
+    "_id": "62b463163879012d194814a6",
+    "generate_results": [
+      "import zipfile\n\ndef files_list_from_zipfile(zip_path):\n    with zipfile.ZipFile(zip_path) as zip_file:\n        return zip_file.namelist()"
+    ]
+  },
+  {
+    "_id": "62b4631b3879012d194814dd",
+    "generate_results": [
+      "def fix_namespace_prefix_w(content):\n    return content.replace(\"w:st=\", \"w-st=\")"
+    ]
+  },
+  {
+    "_id": "62b463283879012d1948153d",
+    "generate_results": [
+      "def match_pubdate(node):\n    for xpath in pubdate_xpaths:\n        elements = node.xpath(xpath)\n        if elements:\n            return elements[0]\n    return None"
+    ]
+  },
+  {
+    "_id": "62b463303879012d19481579",
+    "generate_results": [
+      "def _extract_number_and_supplment_from_issue_element(issue):\n    number = None\n    suppl = None\n    if issue is not None:\n        number_elem = issue.find('.//{http://www.w3.org/1999/xhtml}number')\n        if number_elem is not None and number_elem.text:\n            number = number_elem.text.strip()\n        suppl_elem = issue.find('.//{http://www.w3.org/1999/xhtml}suppl')\n        if suppl_elem is not None and suppl_elem.text:\n            suppl = suppl_elem.text.strip()\n    return number, suppl"
+    ]
+  },
+  {
+    "_id": "62b46746d2f69a53b4661722",
+    "generate_results": [
+      "def absorb(self, args):\n    new_args = []\n    for expr in args:\n        redundant = False\n        for other in args:\n            if expr is other:\n                continue\n            if (self._pyoperator is operator.and_ and other in expr) or (self._pyoperator is operator.or_ and expr in other):\n                redundant = True\n                break\n            elif self._pyoperator is operator.and_ and other._pyoperator is operator.or_ and expr.NOT in other.args:\n                redundant = True\n                break\n            elif self._pyoperator is operator.or_ and other._pyoperator is operator.and_ and expr.NOT in other.args:\n                redundant = True\n                break\n        if not redundant:\n            new_args.append(expr)\n    return new_args"
+    ]
+  },
+  {
+    "_id": "62b86707b4d922cb0e688c2a",
+    "generate_results": [
+      "import inspect\n\ndef on(hook):\n    def decorator(func):\n        class_name = func.__qualname__.split('.')[0]\n        module = inspect.getmodule(func)\n        cls = getattr(module, class_name)\n        if not hasattr(cls, 'registry'):\n            cls.registry = {}\n        cls.registry.setdefault(hook, []).append(func)\n        return func\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62b86729b4d922cb0e688c2f",
+    "generate_results": [
+      "def base_config(user, etcd_host, etcd_port):\n    return {\n        \"tls\": False,\n        \"authentication\": {\"user\": user},\n        \"authorization\": {\"enabled\": True},\n        \"etcd\": {\n            \"host\": etcd_host,\n            \"port\": etcd_port,\n        },\n        \"docs\": True,\n        \"log\": {\"level\": \"info\"},\n    }"
+    ]
+  },
+  {
+    "_id": "62b8a4a4755ee91dce50a3d2",
+    "generate_results": [
+      "def _fromutc(self, dt):\n    offset = self.utcoffset(dt)\n    local = dt - offset\n    local = local.replace(tzinfo=self)\n    if self._is_ambiguous(local):\n        d = local.replace(fold=1)\n        od = self.utcoffset(d)\n        if d + od == dt:\n            return d\n        else:\n            return local.replace(fold=0)\n    else:\n        return local"
+    ]
+  },
+  {
+    "_id": "62b8982f755ee91dce50a241",
+    "generate_results": [
+      "def normalized(self):\n    # Convert weeks to days\n    if self.weeks is not None:\n        self.days = (self.days or 0) + (self.weeks * 7)\n        self.weeks = None\n\n    # Convert days to hours\n    if self.days is not None:\n        self.hours = (self.hours or 0) + (self.days * 24)\n        self.days = None\n\n    # Convert hours to minutes\n    if self.hours is not None:\n        self.minutes = (self.minutes or 0) + (self.hours * 60)\n        self.hours = None\n\n    # Convert minutes to seconds\n    if self.minutes is not None:\n        self.seconds = (self.seconds or 0) + (self.minutes * 60)\n        self.minutes = None\n\n    # Convert seconds to microseconds\n    if self.seconds is not None:\n        self.microseconds = (self.microseconds or 0) + (self.seconds * 1_000_000)\n        self.seconds = None\n\n    return self"
+    ]
+  },
+  {
+    "_id": "62b87d24d292efb640a55670",
+    "generate_results": [
+      "import os\nimport sys\nimport errno\nimport re\nimport subprocess\nfrom functools import lru_cache\nfrom typing import Any, Dict, List, Optional, Tuple, Union\n\ndef get_keywords():\n    return {}\n\ndef get_config():\n    return {}\n\ndef register_vcs_handler(vcs: str, method: str):\n    pass\n\ndef run_command(\n    commands: List[str],\n    args: List[str],\n    cwd: str,\n    verbose: bool = False,\n    hide_stderr: bool = False,\n    env: Optional[Dict[str, str]] = None,\n) -> Tuple[int, str, str]:\n    if env is None:\n        env = {}\n    try:\n        proc = subprocess.Popen(\n            [commands[-1]] + args,\n            stdin=subprocess.PIPE,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE if not hide_stderr else subprocess.DEVNULL,\n            cwd=cwd,\n            env=env,\n        )\n        stdout, stderr = proc.communicate()\n        stdout = stdout.decode(\"utf-8\")\n        stderr = stderr.decode(\"utf-8\") if not hide_stderr else \"\"\n        return proc.returncode, stdout.strip(), stderr.strip()\n    except OSError as e:\n        if e.errno == errno.ENOENT:\n            return -1, \"\", f\"Command {commands[-1]} not found\"\n        raise\n\ndef versions_from_parentdir(\n    parentdir_prefix: str, root: str, verbose: bool = False\n) -> Dict[str, str]:\n    try:\n        d = os.path.basename(root)\n        if not d.startswith(parentdir_prefix):\n            return {}\n        return {\"version\": d[len(parentdir_prefix):], \"full-revisionid\": d}\n    except Exception:\n        return {}\n\ndef git_get_keywords(versionfile_abs: str) -> Dict[str, str]:\n    return {}\n\ndef git_versions_from_keywords(\n    keywords: Dict[str, str], tag_prefix: str, verbose: bool = False\n) -> Dict[str, str]:\n    return {}\n\ndef git_pieces_from_vcs(\n    tag_prefix: str,\n    root: str,\n    verbose: bool = False,\n    runner: Any = run_command,\n) -> Dict[str, str]:\n    return {}\n\ndef plus_or_dot(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_pep440(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_pep440_branch(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef pep440_split_post(ver: str) -> Tuple[str, str]:\n    return \"\", \"\"\n\ndef render_pep440_pre(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_pep440_post(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_pep440_post_branch(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_pep440_old(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_git_describe(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render_git_describe_long(pieces: Dict[str, str]) -> str:\n    return \"\"\n\ndef render(pieces: Dict[str, str], style: str) -> str:\n    return \"\"\n\ndef get_versions(default: Optional[str] = None) -> Dict[str, str]:\n    target_file = \"src/prestoplot/_version.py\"\n    try:\n        with open(target_file, \"r\") as f:\n            lines = f.read().splitlines()\n        for line in lines:\n            if line.startswith(\"__version__\"):\n                version_match = re.search(r'__version__\\s*=\\s*[\\'\"]([^\\'\"]+)[\\'\"]', line)\n                if version_match:\n                    return {\"version\": version_match.group(1), \"full-revisionid\": version_match.group(1)}\n        return {\"version\": default or \"unknown\", \"full-revisionid\": default or \"unknown\"}\n    except Exception:\n        return {\"version\": default or \"unknown\", \"full-revisionid\": default or \"unknown\"}"
+    ]
+  },
+  {
+    "_id": "62b87d24d292efb640a5566f",
+    "generate_results": [
+      "```python\ndef render(pieces, style):\n    if style == 'pep440':\n        return render_pep440(pieces)\n    elif style == 'pep440_branch':\n        return render_pep440_branch(pieces)\n    elif style == 'pep440_pre':\n        return render_pep440_pre(pieces)\n    elif style == 'pep440_post"
+    ]
+  },
+  {
+    "_id": "62b87d24d292efb640a5566d",
+    "generate_results": [
+      "def plus_or_dot():\n    \"\"\"Return a + if we don't already have one, else return a .\"\"\"\n    return '.' if '+' in pieces[-1] else '+'"
+    ]
+  },
+  {
+    "_id": "62b87d23d292efb640a5566b",
+    "generate_results": [
+      "import subprocess\n\ndef run_command(*args: str) -> str:\n    try:\n        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)\n        return result.stdout\n    except (subprocess.CalledProcessError, FileNotFoundError):\n        return ''"
+    ]
+  },
+  {
+    "_id": "62b87d23d292efb640a55668",
+    "generate_results": [
+      "def get_config():\n    from versioneer import VersioneerConfig\n    cfg = VersioneerConfig()\n    cfg.VCS = \"git\"\n    cfg.style = \"pep440\"\n    cfg.tag_prefix = \"\"\n    cfg.parentdir_prefix = \"prestoplot-\"\n    return cfg"
+    ]
+  },
+  {
+    "_id": "62b87d23d292efb640a55667",
+    "generate_results": [
+      "def register_vcs_handler(vcs_name):\n    vcs_handlers = getattr(sys.modules[__name__], 'vcs_handlers', {})\n    def decorator(func):\n        vcs_handlers[vcs_name] = func\n        setattr(sys.modules[__name__], 'vcs_handlers', vcs_handlers)\n        return func\n    return decorator"
+    ]
+  },
+  {
+    "_id": "62b45e945108cfac7f210a4a",
+    "generate_results": [
+      "def validate_hierarchy(self, validate_objects, check_digests, show_warnings):\n    self.num_objects = 0\n    self.good_objects = 0\n    self.num_traversal_errors = 0\n\n    if not self.root_fs:\n        self.open_root_fs(create=False)\n\n    if not self.check_root_structure():\n        self.log.error(\"Invalid root structure\")\n        return self.num_objects, self.good_objects\n\n    if not self.validate_extensions_dir():\n        self.log.error(\"Invalid extensions directory\")\n        return self.num_objects, self.good_objects\n\n    if validate_objects:\n        for obj_id in self.object_paths():\n            self.num_objects += 1\n            try:\n                obj_valid = True\n                if not self.root_fs.exists(self.object_path(obj_id)):\n                    self.traversal_error(code='object_missing', message=f\"Object {obj_id} not found\")\n                    obj_valid = False\n                if obj_valid:\n                    self.good_objects += 1\n            except Exception as e:\n                self.traversal_error(code='object_invalid', message=str(e))\n                if show_warnings:\n                    self.log.warning(f\"Invalid object: {obj_id}\")\n    return self.num_objects, self.good_objects"
+    ]
+  },
+  {
+    "_id": "62b45e515108cfac7f210a3c",
+    "generate_results": [
+      "def initialize(self):\n    self.log.info(\"Initializing new OCFL storage root at %s\", self.root)\n    if not self.root_fs.exists():\n        self.root_fs.makedir(self.root, recreate=True)\n    self.open_root_fs(create=True)\n    self.check_root_structure()\n    self.validate_extensions_dir()\n    self.parse_layout_file()\n    self.dispositor = self.dispositor(self)\n    self.description = \"OCFL storage root initialized\"\n    self.layout_file = self.root_fs.gettext(\"layout\")\n    self.spec_file = self.root_fs.gettext(\"spec\")\n    self.declaration_tvalue = self.root_fs.gettext(\"declaration\")\n    self.registered_extensions = []\n    self.lax_digests = self.lax_digests\n    self.num_traversal_errors = 0\n    self.good_objects = 0\n    self.num_objects = 0\n    self._dispositor = self.disposition\n    self.log.info(\"OCFL storage root initialized successfully.\")"
+    ]
+  },
+  {
+    "_id": "62b45e21e0d4551b0392c8ed",
+    "generate_results": [
+      "import re\nimport sys\nfrom pyfs import fs\nfrom namaste import Namaste\n\ndef find_path_type(path):\n    try:\n        if not fs.exists(path):\n            return \"path does not exist\"\n        if fs.isdir(path):\n            nm = Namaste(path)\n            if nm.is_root():\n                return 'root'\n            elif nm.is_object():\n                return 'object'\n            else:\n                return 'directory'\n        elif fs.isfile(path):\n            return 'file'\n        else:\n            return 'unknown type'\n    except Exception as e:\n        return str(e)"
+    ]
+  },
+  {
+    "_id": "62b45b396decaeff903e1001",
+    "generate_results": [
+      "def amend_bzparams(self, params, bug_ids):\n    pass"
+    ]
+  },
+  {
+    "_id": "62b45679d7d32e5b55cc83a9",
+    "generate_results": [
+      "def parser_flags(parser):\n    return ' '.join(\n        f'--{dest}' if action.nargs in (0, None) else f'--{dest}={value}'\n        for group in parser._action_groups\n        for action in group._actions\n        if action.dest != 'help'\n        for dest in [action.dest]\n        for value in ([action.default] if action.default is not None else [])\n    )"
+    ]
+  },
+  {
+    "_id": "62b45665d7d32e5b55cc8364",
+    "generate_results": [
+      "import argparse\nimport collections\n\ndef parse_subparser_arguments(unparsed_arguments, subparsers):\n    parsed = collections.defaultdict(lambda: argparse.Namespace())\n    remaining_arguments = list(unparsed_arguments)\n\n    for subparser_name, parser in subparsers.items():\n        try:\n            args, tail = parser.parse_known_args(remaining_arguments)\n            for key, value in vars(args).items():\n                setattr(parsed[subparser_name], key, value)\n            remaining_arguments = tail\n        except SystemExit:\n            pass  # Ignore errors; let other subparsers try\n\n    return dict(parsed), remaining_arguments"
+    ]
+  },
+  {
+    "_id": "62b438b666fea644fe22cc78",
+    "generate_results": [
+      "import sys\nimport argparse\nimport borgmatic.argparse\n\n\ndef parse_arguments():\n    parser = argparse.ArgumentParser(description='Generate a default Borgmatic configuration file.')\n    parser.add_argument(\n        '-o',\n        '--output',\n        dest='output_path',\n        default=DEFAULT_DESTINATION_CONFIG_FILENAME,\n        help='Path to write the generated configuration file (default: {})'.format(DEFAULT_DESTINATION_CONFIG_FILENAME),\n    )\n    return parser.parse_args()\n\n\ndef main():\n    args = parse_arguments()\n    # Implementation for generating config would go here\n\n\nif __name__ == '__main__':\n    main()"
+    ]
+  },
+  {
+    "_id": "62b438b666fea644fe22cc72",
+    "generate_results": [
+      "def parser_flags(parser):\n    flags = []\n    for action in parser._actions:\n        if action.option_strings:\n            flags.extend(action.option_strings)\n    return ' '.join(flags)"
+    ]
+  },
+  {
+    "_id": "62b438b566fea644fe22cc70",
+    "generate_results": [
+      "def bash_completion():\n    return \"\"\"# bash completion for borgmatic\n\nborgmatic_completion() {\n    local cur prev words cword\n    _get_comp_words_by_ref -n : -w words -i cword\n    prev=\"${words[cword-1]}\"\n    if [[ \"$prev\" == \"borgmatic\" ]]; then\n        COMPREPLY=( $(compgen -W \"$(borgmatic --bash-completion)\" -- \"$cur\") )\n    else\n        COMPREPLY=( $(compgen -W \"$(borgmatic --bash-completion \"${words[@]}\")\" -- \"$cur\") )\n    fi\n}\ncomplete -F borgmatic_completion borgmatic\n    \"\"\""
+    ]
+  },
+  {
+    "_id": "62b438a266fea644fe22cc2e",
+    "generate_results": [
+      "import argparse\nfrom collections import namedtuple\n\ndef parse_arguments(args=None):\n    main_parser, subparsers = make_parsers()\n    global_args, unparsed = main_parser.parse_known_args(args=args)\n    subparser_name = getattr(global_args, 'subparser_name', None)\n    result = {'global': global_args}\n    if subparser_name:\n        subparser_namespace = parse_subparser_arguments(unparsed, subparsers)\n        result[subparser_name] = subparser_namespace\n    return result"
+    ]
+  },
+  {
+    "_id": "62b438a266fea644fe22cc2d",
+    "generate_results": [
+      "import argparse\n\ndef parse_subparser_arguments(unparsed_arguments, subparsers):\n    parsed_namespaces = {}\n    parsed_argument_sets = []\n    original_args = list(unparsed_arguments)\n    for name, parser in subparsers.items():\n        args_copy = original_args.copy()\n        namespace, temp_remaining = parser.parse_known_args(args_copy)\n        parsed_namespaces[name] = namespace\n        parsed_argument_sets.append(set(args_copy) - set(temp_remaining))\n    all_parsed_args = set()\n    for s in parsed_argument_sets:\n        all_parsed_args.update(s)\n    remaining_arguments = [arg for arg in original_args if arg not in all_parsed_args]\n    return parsed_namespaces, remaining_arguments"
+    ]
+  },
+  {
+    "_id": "62b438a266fea644fe22cc2c",
+    "generate_results": [
+      "import argparse\n\ndef make_parsers():\n    parser = argparse.ArgumentParser(prog='borgmatic')\n    subparsers = parser.add_subparsers(dest='command', metavar='COMMAND')\n    return parser, subparsers"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd5f",
+    "generate_results": [
+      "def paging(response, max_results):\n    \"\"\"\n    Returns WAPI response page by page\n\n    Args:\n        response (list): WAPI response.\n        max_results (int): Maximum number of objects to be returned in one page.\n    Returns:\n        Generator object with WAPI response split page by page.\n    \"\"\"\n    for i in range(0, len(response), max_results):\n        yield response[i:i + max_results]"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd61",
+    "generate_results": [
+      "def _dictsum(dicts):\n    result = {}\n    for d in dicts:\n        for key, value in d.items():\n            result[key] = result.get(key, 0) + value\n    return result"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd63",
+    "generate_results": [
+      "def is_none_string(val):\n    if isinstance(val, str):\n        return val.lower() == 'none'\n    return False"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd65",
+    "generate_results": [
+      "def parser_flags(script):\n    flags = []\n    for action in script._actions:\n        if action.option_strings:\n            flags.extend(action.option_strings)\n    return ' '.join(flags)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd69",
+    "generate_results": [
+      "def _replace_register(flow_params, register_number, register_value):\n    flow_params[register_number] = flow_params.pop(register_value)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd6a",
+    "generate_results": [
+      "def replace_dots(value, arg):\n    return value.replace('.', arg)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd6b",
+    "generate_results": [
+      "def subclasses(cls):\n    all_subclasses = set()\n    for sub in cls.__subclasses__():\n        all_subclasses.add(sub)\n        all_subclasses.update(subclasses(sub))\n    return list(all_subclasses)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd6d",
+    "generate_results": [
+      "def string_to_int(string, alphabet):\n    num = 0\n    base = len(alphabet)\n    for c in string:\n        num = num * base + alphabet.index(c)\n    return num"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd6f",
+    "generate_results": [
+      "import requests\nimport tarfile\nimport os\nimport tempfile\nfrom pathlib import Path\n\ndef get_repo_archive(url, destination_path):\n    response = requests.get(url)\n    response.raise_for_status()\n    with tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz') as tmp_file:\n        tmp_file.write(response.content)\n        tmp_file_path = tmp_file.name\n    try:\n        dest_path = Path(destination_path)\n        dest_path.mkdir(parents=True, exist_ok=True)\n        with tarfile.open(tmp_file_path, 'r:gz') as tar:\n            members = tar.getmembers()\n            if not members:\n                raise ValueError(\"Archive is empty\")\n            first_member = members[0]\n            tar.extractall(path=dest_path)\n        return dest_path / first_member.name\n    finally:\n        os.remove(tmp_file_path)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd70",
+    "generate_results": [
+      "def os_is_mac():\n    import os\n    try:\n        return os.uname().sysname == 'Darwin'\n    except AttributeError:\n        return False"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd71",
+    "generate_results": [
+      "import re\n\ndef regex_dict(item):\n    new_dict = {}\n    for key in item:\n        pattern = re.escape(key).replace('\\\\*', '.*')\n        regex_key = f'^{pattern}$'\n        new_dict[regex_key] = item[key]\n    return new_dict"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd72",
+    "generate_results": [
+      "import re\n\ndef unquote(name):\n    return re.sub(r\"['\\\"]\", \"\", name)"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd73",
+    "generate_results": [
+      "import re\nimport os\n\ndef split(s, platform='this'):\n    \"\"\"\n    Multi-platform variant of shlex.split() for command-line splitting.\n    For use with subprocess, for argv injection etc. Using fast REGEX.\n\n    platform: 'this' = auto from current platform;\n              1 = POSIX;\n              0 = Windows/CMD\n              (other values reserved)\n    \"\"\"\n    if platform == 'this':\n        platform = int(os.name == 'posix')\n\n    if platform == 1:\n        # POSIX style\n        return re.findall(r'''((?:[^\"']|\"[^\"]*\"|'[^']*')+)''', s)\n\n    elif platform == 0:\n        # Windows/CMD style\n        args = []\n        i = 0\n        while i < len(s):\n            if s[i] in (' ', '\\t'):\n                i += 1\n                continue\n            if s[i] in ('\"', \"'\"):\n                quote = s[i]\n                i += 1\n                j = i\n                while j < len(s) and s[j] != quote:\n                    j += 1\n                args.append(s[i:j])\n                i = j + 1\n            else:\n                j = i\n                while j < len(s) and s[j] not in (' ', '\\t'):\n                    j += 1\n                args.append(s[i:j])\n                i = j\n        return args\n\n    else:\n        raise ValueError(\"Invalid platform value\")"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd74",
+    "generate_results": [
+      "import subprocess\nimport os\n\ndef prepare_repository_from_archive(archive_path, filename, tmp_path):\n    if archive_path.endswith('.zip'):\n        subprocess.run(['unzip', archive_path, '-d', tmp_path], check=True)\n    elif archive_path.endswith('.tar.gz') or archive_path.endswith('.tgz'):\n        subprocess.run(['tar', '-xzf', archive_path, '-C', tmp_path], check=True)\n    elif archive_path.endswith('.tar'):\n        subprocess.run(['tar', '-xf', archive_path, '-C', tmp_path], check=True)\n    else:\n        raise ValueError(f\"Unsupported archive format: {archive_path}\")\n    return f'file://{os.path.join(tmp_path, filename)}'"
+    ]
+  },
+  {
+    "_id": "62ece4982e6aefcf4aabbd77",
+    "generate_results": [
+      "import datetime\n\ndef parse_frequency(frequency):\n    if frequency is None:\n        return None\n    if frequency.lower() == 'always':\n        return None\n    parts = frequency.split()\n    if len(parts) != 2:\n        raise ValueError(f\"Invalid frequency: {frequency}\")\n    number_str, unit_str = parts\n    try:\n        number = int(number_str)\n    except ValueError:\n        raise ValueError(f\"Invalid number in frequency: {frequency}\")\n    unit = unit_str.lower()\n    unit_map = {\n        'day': 'days',\n        'days': 'days',\n        'hour': 'hours',\n        'hours': 'hours',\n        'minute': 'minutes',\n        'minutes': 'minutes',\n        'second': 'seconds',\n        'seconds': 'seconds',\n        'microsecond': 'microseconds',\n        'microseconds': 'microseconds',\n        'week': 'weeks',\n        'weeks': 'weeks',\n        'millisecond': 'milliseconds',\n        'milliseconds': 'milliseconds',\n    }\n    if unit not in unit_map:\n        raise ValueError(f\"Unknown time unit in frequency: {frequency}\")\n    keyword = unit_map[unit]\n    try:\n        return datetime.timedelta(**{keyword: number})\n    except TypeError:\n        raise ValueError(f\"Invalid time unit for frequency: {frequency}\")"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd7a",
+    "generate_results": [
+      "import os\n\ndef is_gitbash():\n    return os.name == 'nt' and 'MSYSTEM' in os.environ"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd7d",
+    "generate_results": [
+      "import subprocess\nimport os\nimport sys\n\ndef subprocess_run_helper(func, *args, extra_env=None):\n    module_name = func.__module__\n    func_name = func.__name__\n    code = (\n        f\"import sys\\n\"\n        f\"try:\\n\"\n        f\"    __import__('{module_name}', fromlist=[''])\\n\"\n        f\"    module = sys.modules['{module_name}']\\n\"\n        f\"    func = getattr(module, '{func_name}')\\n\"\n        f\"    func(*sys.argv[1:])\\n\"\n        f\"    sys.exit(0)\\n\"\n        f\"except Exception as e:\\n\"\n        f\"    print(e, file=sys.stderr)\\n\"\n        f\"    sys.exit(1)\\n\"\n    )\n    cmd = [sys.executable, '-c', code] + list(args)\n    env = os.environ.copy()\n    if extra_env:\n        env.update(extra_env)\n    return subprocess.run(cmd, env=env)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd7e",
+    "generate_results": [
+      "import os\n\ndef _resolve_string(matcher, environment):\n    name = matcher.group('name')\n    default = matcher.group('default')\n    value = environment.get(name)\n    if value is None:\n        if default is not None:\n            return default\n        raise Error(f\"Environment variable {name} is not defined\")\n    return value"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd7f",
+    "generate_results": [
+      "from urllib.parse import urlparse\n\ndef _parse_image_ref(image_href):\n    parsed = urlparse(image_href)\n    if parsed.scheme in ('http', 'https'):\n        if not parsed.netloc:\n            raise ValueError(\"Invalid image href format: missing netloc\")\n        path = parsed.path\n        image_id = path.rstrip('/').split('/')[-1]\n        if not image_id:\n            raise ValueError(\"Invalid image href format: missing image ID\")\n        return (image_id, parsed.netloc, parsed.scheme == 'https')\n    else:\n        image_id = image_href\n        if not image_id:\n            raise ValueError(\"Invalid image href format: missing image ID\")\n        return (image_id, '', False)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd80",
+    "generate_results": [
+      "def remove_ending_os_sep(input_list):\n    if input_list is None:\n        return []\n    if not isinstance(input_list, list):\n        raise TypeError(\"input_list must be a list\")\n    processed = []\n    for s in input_list:\n        if len(s) > 1 and s[-1] == os.sep:\n            processed.append(s.rstrip(os.sep))\n        else:\n            processed.append(s)\n    return processed"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd82",
+    "generate_results": [
+      "import re\n\ndef get_pattern(pattern, strip=False):\n    if isinstance(pattern, re.Pattern):\n        return pattern\n    if strip:\n        pattern = pattern.strip()\n    return re.compile(pattern)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd83",
+    "generate_results": [
+      "import subprocess\n\ndef run_command(command):\n    process = subprocess.run(command, capture_output=True, text=True)\n    return (process.stdout, process.returncode)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd84",
+    "generate_results": [
+      "def is_ipv4(target):\n    \"\"\"Test if IPv4 address or not\"\"\"\n    import ipaddress\n    try:\n        ip = ipaddress.ip_address(target)\n        return ip.version == 4\n    except ValueError:\n        return False"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd85",
+    "generate_results": [
+      "def find_roots(graph, prop, roots=None):\n    if roots is None:\n        roots = set()\n    subjects = set(graph.subjects(predicate=prop))\n    objects = set(graph.objects(predicate=prop))\n    roots.update(objects - subjects)\n    return roots"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd86",
+    "generate_results": [
+      "```python\nimport yaml\n\ndef _dump_string(obj):\n    \"\"\"\n    Dump to a py2-unicode or py3-string\n\n    Args:\n        obj: python object\n\n    Returns:\n        YAML stream\n    \"\"\"\n    return yaml.dump(obj)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd88",
+    "generate_results": [
+      "def make_array(shape, dtype):\n    \"\"\"\n    Function to create an array with shape and dtype.\n\n    Parameters\n    ----------\n    shape : tuple\n        shape of the array to create\n    dtype : `numpy.dtype`\n        data-type of the array to create\n\n    Returns\n    -------\n    array\n    \"\"\"\n    import numpy as np\n    return np.zeros(shape, dtype=dtype)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd89",
+    "generate_results": [
+      "import numpy as np\n\ndef gaussian(x):\n    \"\"\"\n    Gaussian centered around 0.2 with a sigma of 0.1.\n    \"\"\"\n    u = 0.2\n    sigma = 0.1\n    return (1/(sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - u)/sigma)**2)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd8a",
+    "generate_results": [
+      "import json\nimport logging\n\ndef load_configurations(filenames):\n    configs = {}\n    errors = []\n    for filename in filenames:\n        try:\n            with open(filename, 'r') as file:\n                content = file.read()\n        except (FileNotFoundError, PermissionError) as e:\n            log_record = logging.LogRecord(\n                name='borgmatic',\n                level=logging.ERROR,\n                pathname=__file__,\n                lineno=0,\n                msg=f\"Failed to read configuration file {filename}: {e}\",\n                args=(),\n                exc_info=None\n            )\n            errors.append(log_record)\n            continue\n        try:\n            parsed_config = json.loads(content)\n        except json.JSONDecodeError as e:\n            log_record = logging.LogRecord(\n                name='borgmatic',\n                level=logging.ERROR,\n                pathname=__file__,\n                lineno=0,\n                msg=f\"Failed to parse configuration file {filename}: {e}\",\n                args=(),\n                exc_info=None\n            )\n            errors.append(log_record)\n        else:\n            configs[filename] = parsed_config\n    return (configs, errors)"
+    ]
+  },
+  {
+    "_id": "62ece4992e6aefcf4aabbd8b",
+    "generate_results": [
+      "import numpy\n\ndef force_string(obj):\n    if isinstance(obj, (bytes, numpy.bytes_)):\n        return obj.decode('utf-8')\n    return obj"
+    ]
+  },
+  {
+    "_id": "62e60e3bd76274f8a4026d1a",
+    "generate_results": [
+      "from neo4j import Bookmarks\n\nclass Bookmarks:\n    @classmethod\n    def from_raw_values(cls, values):\n        return cls(values)"
+    ]
+  },
+  {
+    "_id": "62b87b4f9a0c4fa8b80b3581",
+    "generate_results": [
+      "def scale(self, other=None, recompute=False):\n    if other is None:\n        if self._scale is None or recompute:\n            self._scale = sum(self.bins)\n        return self._scale\n    else:\n        current_scale = self.scale(recompute=recompute)\n        if current_scale == 0:\n            raise LenaValueError(\"Cannot rescale histogram with zero scale.\")\n        factor = other / current_scale\n        for i in range(len(self.bins)):\n            self.bins[i] *= factor\n        self._scale = other"
+    ]
+  },
+  {
+    "_id": "62b87b519a0c4fa8b80b3583",
+    "generate_results": [
+      "class Graph:\n    def scale(self, other):\n        if other is None:\n            return self._scale\n        if not isinstance(other, (int, float)):\n            raise TypeError(\"Scale factor must be a number\")\n        if self._scale is None or self._scale == 0:\n            raise LenaValueError(\"Cannot rescale with unknown or zero scale\")\n        main_coord_name = self._coord_names[-1]\n        main_idx = len(self._coord_names) - 1\n        err_indices = self._get_err_indices(main_coord_name)\n        factor = self._scale / other\n        new_coords = []\n        for point in self.coords:\n            point_list = list(point)\n            point_list[main_idx] *= factor\n            for idx in err_indices:\n                point_list[idx] *= factor\n            new_coords.append(tuple(point_list))\n        self.coords = new_coords\n        self._scale = other"
+    ]
+  },
+  {
+    "_id": "62b87b869a0c4fa8b80b35e1",
+    "generate_results": [
+      "def hist_to_graph(hist, make_value=None, get_coordinate=\"left\", field_names=None, scale=False):\n    if make_value is None:\n        make_value = lambda content: content\n    points = []\n    for bin in hist.bins:\n        if get_coordinate == \"left\":\n            x = bin.left\n        elif get_coordinate == \"right\":\n            x = bin.right\n        elif get_coordinate == \"middle\":\n            x = (bin.left + bin.right) / 2\n        else:\n            raise ValueError(\"Invalid get_coordinate value. Use 'left', 'right', or 'middle'.\")\n        content = bin.content\n        values = make_value(content)\n        if not isinstance(values, tuple):\n            values = (values,)\n        point = (x,) + values\n        points.append(point)\n    graph_scale = hist.scale if scale else None\n    return Graph(points, field_names=field_names, scale=graph_scale)"
+    ]
+  },
+  {
+    "_id": "62b8b4baeb7e40a82d2d1136",
+    "generate_results": [
+      "from zope.interface import Invalid\n\ndef _verify(iface, candidate, tentative, vtype):\n    errors = []\n    if not tentative:\n        if not iface.providedBy(candidate):\n            errors.append(Invalid(\"Candidate does not declare that it provides the interface.\"))\n    for name in iface.names():\n        desc = getattr(iface, name)\n        try:\n            _verify_element(iface, name, desc, candidate, vtype)\n        except Invalid as e:\n            errors.append(e)\n    if errors:\n        if len(errors) == 1:\n            raise errors[0]\n        else:\n            msg = '\\n'.join(str(e) for e in errors)\n            raise Invalid(msg)\n    return True"
+    ]
+  },
+  {
+    "_id": "62b8b4baeb7e40a82d2d1137",
+    "generate_results": [
+      "def verifyObject(iface, candidate, tentative=False):\n    return _verify(iface, candidate, tentative, 'object')"
+    ]
+  },
+  {
+    "_id": "62b8b4c1eb7e40a82d2d1139",
+    "generate_results": [
+      "def verifyClass(iface, candidate, tentative=False):\n    \"\"\"\n    Verify that the *candidate* might correctly provide *iface*.\n    \"\"\"\n    return _verify(iface, candidate, tentative, 'class')"
+    ]
+  },
+  {
+    "_id": "62b8b559eb7e40a82d2d11f6",
+    "generate_results": [
+      "def determineMetaclass(bases, explicit_mc):\n    if explicit_mc is not None:\n        return explicit_mc\n    candidates = [type(b) for b in bases]\n    mcs = list(set(candidates))\n    if not mcs:\n        return type\n    if len(mcs) == 1:\n        return mcs[0]\n    for mc in mcs:\n        if all(issubclass(mc, other) for other in mcs if other != mc):\n            return mc\n    raise TypeError(\"Conflicting metaclasses: %s\" % mcs)"
+    ]
+  },
+  {
+    "_id": "62b8d22a48ba5a41d1c3f47d",
+    "generate_results": [
+      "def pop(self, key, *args):\n    if len(args) > 1:\n        raise TypeError(\"pop expected at most 2 arguments, got %d\" % (len(args)+1))\n    try:\n        value = self[key]\n    except KeyError:\n        if args:\n            return args[0]\n        else:\n            raise\n    del self[key]\n    return value"
+    ]
+  },
+  {
+    "_id": "62b8d23748ba5a41d1c3f497",
+    "generate_results": [
+      "def popitem(self):\n    \"\"\"Remove and return the (key, value) pair least frequently used.\"\"\"\n    if not self:\n        raise KeyError('cache is empty')\n    key = min(self.__counter, key=lambda k: (self.__counter[k], k))\n    entry = self.pop(key)\n    del self.__counter[key]\n    return (key, entry)"
+    ]
+  },
+  {
+    "_id": "62b8d23c48ba5a41d1c3f49b",
+    "generate_results": [
+      "def popitem(self):\n    if not self.__order:\n        raise KeyError('cache is empty')\n    key = self.__order[-1]\n    value = self[key]\n    del self[key]\n    return key, value"
+    ]
+  },
+  {
+    "_id": "62b8d23e48ba5a41d1c3f49e",
+    "generate_results": [
+      "def popitem(self):\n    '''Remove and return a random (key, value) pair.'''\n    key = self.__choice()\n    value = self.pop(key)\n    return (key, value)"
+    ]
+  },
+  {
+    "_id": "62b43425903eeb48555d3ea1",
+    "generate_results": [
+      "import re\nimport typing\n\ndef _create_in_regex(self) -> typing.Pattern:\n    \"\"\"Create the in-style parameter regular expression.\n\n    Returns the in-style parameter regular expression (:class:`re.Pattern`).\n    \"\"\"\n    if self._in_style == \"named\":\n        pattern = r\":(\\w+)\"\n    elif self._in_style == \"qmark\":\n        pattern = r\"\\?\"\n    elif self._in_style == \"numeric\":\n        pattern = r\"([@:]\\d+)\"\n    else:\n        raise ValueError(f\"Unsupported IN style: {self._in_style}\")\n\n    return re.compile(pattern)"
+    ]
+  },
+  {
+    "_id": "62b43426903eeb48555d3ea2",
+    "generate_results": [
+      "def _create_converter(self):\n    from .converting import _Converter\n    return _Converter(self._in_style, self._out_style, self._escape_char, self._expand_tuples)"
+    ]
+  },
+  {
+    "_id": "62b8966c755ee91dce50a154",
+    "generate_results": [
+      "def isoparse(self, dt_str):\n    if 'T' in dt_str:\n        date_str, time_tz_str = dt_str.split('T', 1)\n        if 'W' in date_str:\n            year, week, day, is_complete = self._parse_isodate_uncommon(date_str)\n            if not is_complete:\n                raise ValueError(\"Incomplete date cannot be combined with time\")\n            date_obj = self._calculate_weekdate(year, week, day)\n        else:\n            year, month, day, is_complete = self._parse_isodate_common(date_str)\n            if not is_complete:\n                raise ValueError(\"Incomplete date cannot be combined with time\")\n            date_obj = self._create_common_date(year, month, day)\n        tz_match = re.search(r'[Zz]|[-+]\\d{2}[:]?[\\d]{2}?$|[-+]\\d{2}$', time_tz_str)\n        if tz_match:\n            tz_start = tz_match.start()\n            tz_str = time_tz_str[tz_start:]\n            time_part = time_tz_str[:tz_start]\n        else:\n            tz_str = None\n            time_part = time_tz_str\n        hour, minute, second, microsecond = self._parse_isotime(time_part)\n        if hour == 24:\n            if minute != 0 or second != 0 or microsecond != 0:\n                raise ValueError(\"Invalid time with 24 hours\")\n            date_obj += datetime.timedelta(days=1)\n            hour, minute, second, microsecond = 0, 0, 0, 0\n        dt = datetime.datetime.combine(date_obj, datetime.time(hour, minute, second, microsecond))\n        if tz_str:\n            tzinfo = self.parse_tzstr(tz_str)\n            dt = dt.replace(tzinfo=tzinfo)\n        return dt\n    else:\n        if 'W' in dt_str:\n            year, week, day, is_complete = self._parse_isodate_uncommon(dt_str)\n            date_obj = self._calculate_weekdate(year, week, day)\n        else:\n            year, month, day, is_complete = self._parse_isodate_common(dt_str)\n            date_obj = self._create_common_date(year, month, day)\n        return datetime.datetime.combine(date_obj, datetime.time.min)\n\ndef _create_common_date(self, year, month, day):\n    return datetime.date(year, month, day)"
+    ]
+  },
+  {
+    "_id": "62b896de755ee91dce50a183",
+    "generate_results": [
+      "```python\nfrom datetime import datetime, timedelta, tzinfo\nimport re\nimport calendar\nimport time\nimport decimal\nimport six\nimport warnings\nimport io\nfrom dateutil.tz import tzoffset, tzfile, tzutc, tzlocal, gettz\nfrom dateutil._common import default_timezone\n\n__all__ = ['parse']\n\nclass ParserError(ValueError):\n    pass\n\nclass _TimezoneParser:\n    def __init__(self):\n        self._tz_re = re.compile(\n            r'(?P<tzn>(?P<tzh>[+-]?\\d{1,2}):?(?P<tzm>\\d{2})?)|'\n            r'(?P<tzname>[A-Za-z][A-Za-z0-9_]*$',\n            re.IGNORECASE)\n\n    def parse(self, timestr, **kwargs):\n        return _parser(timestr, **kwargs)\n\n_parser = _TimezoneParser()\nparse = _parser.parse\n\ndef _to_decimal(val):\n    if isinstance(val, decimal.Decimal):\n        return val\n    try:\n        return decimal.Decimal(val)\n    except (TypeError, ValueError):\n        raise ParserError(\"Cannot convert to Decimal: %r\" % val)\n\ndef _build_tzinfo(tzinfos, tzname, tzoffset):\n    if tzoffset is None:\n        if tzname in tzinfos:\n            tz = tzinfos[tzname]\n            if isinstance(tz, tzinfo):\n                return tz\n            elif isinstance(tz, int):\n                return tzoffset(tzname, tz)\n            else:\n                raise ParserError(\"Invalid timezone info for %r\" % tzname)\n        else:\n            return tzname\n    else:\n        return tzoffset(tzname, tzoffset)\n\ndef _assign_tzname(dt, tzname):\n    if hasattr(dt, 'replace'):\n        return dt.replace(tzinfo=tzname)\n    else:\n        return dt\n\ndef _could_be_tzname(hour, tzname, tzoffset, token):\n    if hour < 12 and tzname == 'AM':\n        return False\n    if hour >= 12 and tzname == 'PM':\n        return False\n    if tzoffset is not None:\n        return True\n    if tzname in ('UTC', 'GMT', 'Z'):\n        return True\n    if len(token) > 3 and token[-4:] in ('+0000', '-0000'):\n        return True\n    return False\n\ndef _adjust_ampm(hour, ampm):\n    if ampm == 'PM' and hour != 12:\n        return hour + 12\n    elif ampm == 'AM' and hour == 12:\n        return 0\n    return hour\n\ndef _find_hms_idx(idx, tokens, info, allow_jump=True):\n    hms_idx = idx\n    while hms_idx < len(tokens):\n        token = tokens[hms_idx]\n        if info._is_number(token):\n            break\n        hms_idx += 1\n    else:\n        return -1\n    if not allow_jump or hms_idx == idx:\n        return hms_idx\n    return -1\n\ndef _parse_hms(idx, tokens, info, hms_idx):\n    res = {}\n    value = tokens[hms_idx]\n    if ':' in value:\n        parts = value.split(':')\n        if len(parts) > 3:\n            raise ParserError(\"Too many colons in time\")\n        for i, part in enumerate(parts):\n            if i == 0:\n                res['hour'] = int(part)\n            elif i == 1:\n                res['minute'] = int(part)\n            elif i == 2:\n                res['second'] = int(part)\n    else:\n        res['hour'] = int(value)\n    return res\n\ndef _parse_min_sec(value):\n    if '.' in value:\n        sec_part = value.split('.')[1]\n        sec = int(sec_part)\n        microsec = int((decimal.Decimal('0.' + sec_part) * 1e6).quantize(decimal.Decimal('1')))\n        return sec, microsec\n    return int(value), 0\n\ndef _ampm_valid(hour, ampm, fuzzy=False):\n    if ampm is None:\n        return True\n    if ampm == 'AM' and hour >= 12:\n        return False\n    if ampm == 'PM' and hour < 12:\n        return False\n    return True\n\ndef _recombine_skipped(tokens, skipped_idxs):\n    return ''.join(tokens[i] for i in skipped_idxs)\n\ndef _parse_numeric_token(tokens, idx, info, ymd, res, fuzzy):\n    token = tokens[idx]\n    if not info._is_number(token):\n        if not fuzzy:\n            raise ParserError(\"Expected numeric token at position %d\" % idx)\n        return\n    num = int(token)"
+    ]
+  },
+  {
+    "_id": "6305f9991d275c6667163c50",
+    "generate_results": [
+      "def set_cut_chars(self, before, after):\n    \"\"\"\n    Set the bytes used to delimit slice points.\n\n    Args:\n        before: Split file before these delimiters.\n        after: Split file after these delimiters.\n    \"\"\"\n    self._cut_before = before\n    self._cut_after = after"
+    ]
+  },
+  {
+    "_id": "6306292052e177c0ba469f09",
+    "generate_results": [
+      "import json\nimport logging\nfrom lxml import etree\n\nlogger = logging.getLogger(__name__)\n\nMAGIC_ENV_TAG = \"magic_env\"\n\ndef identify_request(request):\n    try:\n        content_type = request.headers.get(\"Content-Type\", \"\")\n        if \"application/json\" in content_type:\n            data = json.loads(request.body)\n            if \"events\" in data:\n                return True\n        elif \"application/xml\" in content_type or \"text/xml\" in content_type:\n            xml = etree.fromstring(request.body)\n            if xml.tag == MAGIC_ENV_TAG:\n                return True\n    except Exception as e:\n        logger.debug(f\"Error identifying Diaspora request: {e}\")\n    return False"
+    ]
+  },
+  {
+    "_id": "6306292152e177c0ba469f0d",
+    "generate_results": [
+      "import json\n\ndef identify_request(request_body: str) -> bool:\n    \"\"\"\n    Try to identify whether this is a Matrix request\n    \"\"\"\n    try:\n        data = json.loads(request_body)\n        if \"events\" in data:\n            return True\n    except json.JSONDecodeError:\n        pass\n    return False"
+    ]
+  },
+  {
+    "_id": "6306292252e177c0ba469f11",
+    "generate_results": [
+      "def format_dt(dt):\n    return ensure_timezone(dt).strftime('%Y-%m-%dT%H:%M:%SZ')"
+    ]
+  },
+  {
+    "_id": "6306292352e177c0ba469f1d",
+    "generate_results": [
+      "import re\nfrom typing import Callable, Set, Tuple\n\ndef find_tags(text: str, replacer: Callable[[str], str] = None) -> Tuple[Set[str], str]:\n    \"\"\"\n    Find tags in text.\n\n    Tries to ignore tags inside code blocks.\n\n    Optionally, if passed a \"replacer\", will also replace the tag word with the result\n    of the replacer function called with the tag word.\n\n    Returns a set of tags and the original or replaced text.\n    \"\"\"\n    # Regular expression to match code blocks (e.g., triple backticks)\n    code_block_pattern = re.compile(r'"
+    ]
+  },
+  {
+    "_id": "6306292352e177c0ba469f1e",
+    "generate_results": [
+      "import re\nimport bleach\nfrom bs4 import BeautifulSoup\nfrom typing import List, Any\n\ndef process_text_links(text: str) -> str:\n    text = bleach.linkify(text, target='_blank', rel=['nofollow', 'noopener', 'noreferrer'])\n    soup = BeautifulSoup(text, 'html.parser')\n    for a in soup.find_all('a'):\n        if not a.has_attr('target'):\n            a['target'] = '_blank'\n        rels = set(a.get('rel', []))\n        required_rels = {'nofollow', 'noopener', 'noreferrer'}\n        for rel in required_rels:\n            rels.add(rel)\n        a['rel'] = list(rels)\n    return str(soup)"
+    ]
+  },
+  {
+    "_id": "6306292a52e177c0ba469f41",
+    "generate_results": [
+      "def test_tag(tag):\n    return not any(char in ILLEGAL_TAG_CHARS for char in tag)"
+    ]
+  },
+  {
+    "_id": "6306298b52e177c0ba469fdc",
+    "generate_results": [
+      "def xml_children_as_dict(xml):\n    result = {}\n    for child in xml:\n        result[child.tag] = child\n    return result"
+    ]
+  },
+  {
+    "_id": "6306299052e177c0ba469fe8",
+    "generate_results": [
+      "def check_sender_and_entity_handle_match(sender_handle: str, entity_handle: str) -> bool:\n    return sender_handle == entity_handle"
+    ]
+  },
+  {
+    "_id": "630629b952e177c0ba46a043",
+    "generate_results": [
+      "from typing import Optional\nimport os\n\nNODEINFO_DOCUMENT_PATH = \"/nodeinfo\"\n\ndef get_nodeinfo_well_known_document(url: str, document_path: Optional[str] = None) -> dict:\n    if document_path is None:\n        document_path = NODEINFO_DOCUMENT_PATH\n    base_url = url.rstrip(\"/\")\n    path = document_path.lstrip(\"/\")\n    href = f\"{base_url}/{path}\"\n    return {\n        \"XML\": {\n            \"@xmlns\": \"xri://$xrds\",\n            \"XRD\": {\n                \"Link\": {\n                    \"@rel\": \"http://nodeinfo.diaspora.software/ns#schema2\",\n                    \"@href\": href\n                }\n            }\n        }\n    }"
+    ]
+  },
+  {
+    "_id": "630629d052e177c0ba46a0a1",
+    "generate_results": [
+      "def verify_relayable_signature(xml_element, public_key):\n    \"\"\"\n    Verify the signed XML elements to have confidence that the claimed\n    author did actually generate this message.\n    \"\"\"\n    from lxml import etree\n    from xml.etree import ElementTree as ET\n\n    # Convert between lxml and standard ElementTree if needed\n    if isinstance(xml_element, etree._Element):\n        xml_element = ET.fromstring(etree.tostring(xml_element))\n\n    signature = xml_element.find('.//{http://www.w3.org/2000/09/xmldsig#}Signature')\n    if signature is None:\n        return False\n\n    # Remove the signature temporarily for verification\n    parent = signature.getparent()\n    parent.remove(signature)\n\n    try:\n        from xmlsec import transform, crypto, dsig\n        ctx = dsig.SignatureContext()\n        ctx.key = crypto.Key.load(public_key, format=crypto.KeyFormat.PEM)\n        return ctx.verify(signature)\n    except Exception:\n        return False\n    finally:\n        # Reinsert the signature back into the XML\n        if parent is not None:\n            parent.append(signature)"
+    ]
+  },
+  {
+    "_id": "630629e152e177c0ba46a0d1",
+    "generate_results": [
+      "def try_retrieve_webfinger_document(handle):\n    try:\n        user, domain = handle.split('@')\n        resource = f\"acct:{handle}\"\n        quoted_resource = urllib.parse.quote(resource)\n        url = f'https://{domain}/.well-known/webfinger?resource={quoted_resource}'\n        response = fetch_file(url, timeout=10, extra_headers={'User-Agent': USER_AGENT})\n        if response.status_code == 200:\n            content_type = fetch_content_type(url)\n            if content_type == 'application/jrd+json':\n                return response.content\n    except (ValueError, requests.exceptions.RequestException, socket.error):\n        pass\n    return None"
+    ]
+  },
+  {
+    "_id": "630629e252e177c0ba46a0d6",
+    "generate_results": [
+      "import urllib.request\nimport lxml.etree as ET\nfrom xrd import XRD\n\ndef retrieve_diaspora_host_meta(host):\n    url = f'https://{host}/.well-known/host-meta'\n    with urllib.request.urlopen(url) as response:\n        xml_content = response.read()\n    xml_root = ET.fromstring(xml_content)\n    return XRD(xml_root)"
+    ]
+  },
+  {
+    "_id": "630629e752e177c0ba46a0fb",
+    "generate_results": [
+      "def send_document(url, data, timeout=10, method='POST', *args, **kwargs):\n    from federation import USER_AGENT\n    headers = kwargs.get('headers', {})\n    headers['User-Agent'] = USER_AGENT\n    kwargs['headers'] = headers\n    try:\n        response = requests.request(\n            method=method.upper(),\n            url=url,\n            data=data,\n            timeout=timeout,\n            *args,\n            **kwargs\n        )\n        return (response.status_code, None)\n    except Exception as e:\n        return (None, e)"
+    ]
+  },
+  {
+    "_id": "6306091a73426c38ae68acc8",
+    "generate_results": [
+      "import os\nimport pytest\nimport infrared\nfrom infrared.cli import IniType, ListOfFileNames\n\ndef list_of_file_names():\n    return IniType(ListOfFileNames())"
+    ]
+  },
+  {
+    "_id": "6306091b73426c38ae68acd7",
+    "generate_results": [
+      "@classmethod\ndef ansible_config_manager(cls):\n    \"\"\"\n    Gets the ansible config manager.\n\n    Returns:\n        object: The Ansible config manager service.\n    \"\"\"\n    return cls._get_service(ServiceName.ANSIBLE_CONFIG_MANAGER)"
+    ]
+  },
+  {
+    "_id": "6306091b73426c38ae68acd9",
+    "generate_results": [
+      "class WorkspaceService:\n    @classmethod\n    def workspace_manager(cls):\n        \"\"\"Gets the workspace manager.\"\"\"\n        return cls._get_service(ServiceName.WORKSPACE_MANAGER)"
+    ]
+  },
+  {
+    "_id": "6306091b73426c38ae68acda",
+    "generate_results": [
+      "class ServiceName:\n    PLUGINS_MANAGER = 'plugins_manager'\n\n\nclass Services:\n    @classmethod\n    def _get_service(cls, name):\n        pass\n\n    @classmethod\n    def plugins_manager(cls):\n        \"\"\"Gets the plugin manager.\"\"\"\n        return cls._get_service(ServiceName.PLUGINS_MANAGER)"
+    ]
+  },
+  {
+    "_id": "6306091d73426c38ae68ace5",
+    "generate_results": [
+      "def _include_groups(self, parser_dict):\n    if 'include' in parser_dict:\n        includes = parser_dict.pop('include')\n        for include in includes:\n            included_parser = self.get_parser_option_specs(include)\n            self._include_groups(included_parser)\n            if 'groups' not in parser_dict:\n                parser_dict['groups'] = []\n            parser_dict['groups'].extend(included_parser.get('groups', []))\n    if 'groups' in parser_dict:\n        for group in parser_dict['groups']:\n            self._include_groups(group)"
+    ]
+  },
+  {
+    "_id": "6306092973426c38ae68ad01",
+    "generate_results": [
+      "def get_deprecated_args(self):\n    deprecated_args = {}\n    for option in self.spec_helper.iterate_option_specs():\n        deprecate = option.get('deprecate')\n        if deprecate:\n            deprecated_args[option['name']] = deprecate\n    return deprecated_args"
+    ]
+  },
+  {
+    "_id": "6306092c73426c38ae68ad02",
+    "generate_results": [
+      "def validate_arg_deprecation(self, cli_args, answer_file_args):\n    deprecated_args = self.get_deprecated_args()\n    for arg in deprecated_args:\n        if cli_args.get(arg) is not None or answer_file_args.get(arg) is not None:\n            LOG.warning(\"Argument '%s' is deprecated and will be removed in a future version.\", arg)"
+    ]
+  },
+  {
+    "_id": "6306092d73426c38ae68ad04",
+    "generate_results": [
+      "def get_parser_option_specs(self, command_name):\n    parser_dict = self.spec_dict[command_name]\n    self._include_groups(parser_dict)\n    return self._get_all_options_spec(parser_dict)"
+    ]
+  },
+  {
+    "_id": "6306092d73426c38ae68ad06",
+    "generate_results": [
+      "def get_silent_args(self, args):\n    \"\"\"\n    list of silenced argument\n\n    :param args: The received arguments.\n    :return: list, slienced argument names\n    \"\"\"\n    silent_args = []\n    for arg in args:\n        if arg.startswith('_'):\n            silent_args.append(arg)\n    return silent_args"
+    ]
+  },
+  {
+    "_id": "6306092d73426c38ae68ad07",
+    "generate_results": [
+      "def validate_requires_args(self, args):\n    for group in self.spec_helper.get_required_groups():\n        required = set(group['required'])\n        provided = set(args.keys())\n        missing = required - provided\n        if missing:\n            raise ValueError(f\"Missing required arguments: {', '.join(missing)}\")"
+    ]
+  },
+  {
+    "_id": "6306092d73426c38ae68ad08",
+    "generate_results": [
+      "def _get_conditionally_required_args(self, command_name, options_spec, args):\n    required_args = []\n    for option in options_spec:\n        required_when = option.get('required_when')\n        if required_when:\n            try:\n                if eval(required_when, {'__builtins__': {}}, args):\n                    required_args.append(option['name'])\n            except NameError:\n                pass\n    return required_args"
+    ]
+  },
+  {
+    "_id": "6306092e73426c38ae68ad0a",
+    "generate_results": [
+      "```python\ndef validate_choices_args(self, args):\n    for arg_name, value in self._iterate_received_arguments(args):\n        spec = self.spec_helper.get_argument"
+    ]
+  },
+  {
+    "_id": "6306092e73426c38ae68ad0b",
+    "generate_results": [
+      "def validate_min_max_args(self, args):\n    for arg_name, value in args.items():\n        if arg_name not in self.spec_dict:\n            continue\n        spec = self.spec_dict[arg_name]\n        min_val = spec.get('min')\n        max_val = spec.get('max')\n        if min_val is not None and value < min_val:\n            raise ValueError(f\"Argument '{arg_name}' has value {value} which is less than the minimum allowed value {min_val}.\")\n        if max_val is not None and value > max_val:\n            raise ValueError(f\"Argument '{arg_name}' has value {value} which is greater than the maximum allowed value {max_val}.\")"
+    ]
+  },
+  {
+    "_id": "6306092e73426c38ae68ad0d",
+    "generate_results": [
+      "COMPLEX_TYPES = {\n    'dict': dict,\n    'list': list,\n    'tuple': tuple,\n}\n\ndef create_complex_argumet_type(self, subcommand, type_name, option_name, spec_option):\n    complex_action = COMPLEX_TYPES.get(type_name)\n    if not complex_action:\n        raise ValueError(f\"Unsupported complex type: {type_name}\")\n    return complex_action(option_name, (self.vars, self.defaults, self.plugin_path), subcommand, spec_option)"
+    ]
+  },
+  {
+    "_id": "6306092e73426c38ae68ad11",
+    "generate_results": [
+      "def merge_extra_vars(vars_dict, extra_vars):\n    for var in extra_vars:\n        key, value = var.split('=', 1)\n        vars_dict[key] = value"
+    ]
+  },
+  {
+    "_id": "63060b1a73426c38ae68ad3e",
+    "generate_results": [
+      "import yaml\nimport os\n\ndef get_plugin_spec_flatten_dict(plugin_dir):\n    \"\"\"\n    Creates a flat dict from the plugin spec\n\n    :param plugin_dir: A path to the plugin's dir\n    :return: A flatten dictionary contains the plugin's properties\n    \"\"\"\n    spec_path = os.path.join(plugin_dir, 'plugin.yaml')\n    with open(spec_path, 'r') as f:\n        spec = yaml.safe_load(f)\n    flat = {}\n    def _flatten(d, parent_key=''):\n        for k, v in d.items():\n            new_key = f\"{parent_key}.{k}\" if parent_key else k\n            if isinstance(v, dict):\n                _flatten(v, new_key)\n            else:\n                flat[new_key] = v\n    if spec:\n        _flatten(spec)\n    return flat"
+    ]
+  },
+  {
+    "_id": "63060b1b73426c38ae68ad42",
+    "generate_results": [
+      "def inject_config(self):\n    \"\"\"Set the environment variable for config path, if it is undefined.\"\"\"\n    if 'ANSIBLE_CONFIG' not in os.environ:\n        os.environ['ANSIBLE_CONFIG'] = self.ansible_config_path"
+    ]
+  },
+  {
+    "_id": "63060b1b73426c38ae68ad43",
+    "generate_results": [
+      "def extend_cli(self, subparser):\n    spec_parser = subparser.add_parser('spec', help='Specification operations')\n    spec_parser.set_defaults(handler=self.spec_handler)"
+    ]
+  }
+]
