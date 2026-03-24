@@ -1,366 +1,958 @@
 # src/beacon_system/logic/rules_global.py
 # -*- coding: utf-8 -*-
+
 """
-rules_global.py
+Global Beacon Logic rules.
 
-Global Beacon Logic (MVP):
+Responsibilities:
+- lift local beacons to global beacons
+- detect entry function(s)
+- propagate beacons across calls
+- approximate return-flow propagation
+- conservatively handle global state
+- produce program-level beacon relations
 
-- G-BASE: mark entry function's local beacons as "global_base"
-- G-CALL: inline semantically relevant callees' local beacons into entry closure
-          (heuristic relevance: assigned-from-call variable participates in output dependency,
-           or call appears directly in return expression; fallback: all project-resolvable calls)
+Non-goals:
+- no code generation
+- no verifier behavior
+- no heavy whole-program semantic analysis
+- no planner-like reasoning
 
-- G-RET / G-GLOB: stubs for MVP
-- P-ENTRY: finalize entry-level closure (MVP: tagging only)
+Expected inputs:
+1) preprocessed: result from logic.preprocess.preprocess_task(...)
+2) local_result: result from logic.rules_local.build_local_beacons(...)
 
-Single Source of Truth: This module lives in logic/, so it may call other logic rules.
-Verifier/Generator MUST NOT re-implement any of this.
-
-Interface:
-    apply_global(state: ReasoningState, entry_key: FuncKey) -> None
+Output:
+- stable dict for downstream builder/tree/signatures
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, asdict
 import ast
-from dataclasses import replace
-from typing import Dict, Iterable, List, Optional, Set, Tuple
-
-from .anchors import anchor_of, ast_kind, make_node_id, NodeID
-from .state import (
-    BeaconEdge,
-    BeaconNode,
-    EdgeKind,
-    FuncKey,
-    ProvenanceStep,
-    ReasoningState,
-    RuleName,
-)
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
-# ----------------------------
-# Small AST helpers
-# ----------------------------
+# ============================================================
+# Small local contracts
+# ============================================================
 
-def _parse_funckey(key: FuncKey) -> Tuple[str, str]:
+@dataclass
+class GlobalCallEdge:
+    caller: str
+    callee: str
+    call_node_id: str
+    call_line_no: int
+    call_code: str
+    via_rule: str = "G-CALL"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class GlobalRetEdge:
+    callee: str
+    caller: str
+    caller_node_id: str
+    caller_line_no: int
+    caller_code: str
+    via_rule: str = "G-RET"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class GlobalStateEdge:
+    symbol: str
+    src_function: str
+    dst_function: str
+    src_node_id: str
+    dst_node_id: str
+    via_rule: str = "G-GLOB"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class GlobalFunctionBeacon:
+    function_name: str
+    signature: Optional[str]
+    lang: str
+    local_beacon_node_ids: List[str]
+    global_beacon_node_ids: List[str]
+    imported_from_calls: List[str]
+    imported_from_returns: List[str]
+    imported_from_globals: List[str]
+    warnings: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class GlobalRulesResult:
+    lang: str
+    entry_functions: List[str]
+    functions: List[Dict[str, Any]]
+    call_edges: List[Dict[str, Any]]
+    ret_edges: List[Dict[str, Any]]
+    global_state_edges: List[Dict[str, Any]]
+    program_beacon_node_ids: List[str]
+    warnings: List[str]
+    debug: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ============================================================
+# Public API
+# ============================================================
+
+def build_global_beacons(preprocessed: Any, local_result: Any) -> Dict[str, Any]:
+    data = _as_dict(preprocessed)
+    loc = _as_dict(local_result)
+
+    lang = str(data.get("lang", "unknown")).lower().strip()
+    source = _read_text(data, "body_text") or _read_text(data, "file_content_text") or _read_text(data, "class_level_text")
+    class_level = _read_text(data, "class_level_text")
+    local_functions = loc.get("functions", []) or []
+
+    warnings: List[str] = []
+
+    if lang == "python":
+        result = _build_global_python(
+            source=source,
+            class_level=class_level,
+            local_functions=local_functions,
+        )
+    elif lang == "java":
+        result = _build_global_java(
+            source=source,
+            class_level=class_level,
+            local_functions=local_functions,
+        )
+    else:
+        result = GlobalRulesResult(
+            lang=lang,
+            entry_functions=[],
+            functions=[],
+            call_edges=[],
+            ret_edges=[],
+            global_state_edges=[],
+            program_beacon_node_ids=[],
+            warnings=[f"unsupported language '{lang}' in global rules"],
+            debug={"reason": "unsupported language"},
+        )
+    return result.to_dict()
+
+
+# ============================================================
+# Python global logic
+# ============================================================
+
+def _build_global_python(
+    source: str,
+    class_level: str,
+    local_functions: List[Dict[str, Any]],
+) -> GlobalRulesResult:
+    warnings: List[str] = []
+
+    if not source.strip():
+        return GlobalRulesResult(
+            lang="python",
+            entry_functions=[],
+            functions=[],
+            call_edges=[],
+            ret_edges=[],
+            global_state_edges=[],
+            program_beacon_node_ids=[],
+            warnings=["empty python source"],
+            debug={"python_parse": "empty_source"},
+        )
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return GlobalRulesResult(
+            lang="python",
+            entry_functions=[],
+            functions=[],
+            call_edges=[],
+            ret_edges=[],
+            global_state_edges=[],
+            program_beacon_node_ids=[],
+            warnings=["python source parse failed in global rules"],
+            debug={"python_parse": "syntax_error", "detail": str(exc)},
+        )
+
+    local_map = _local_function_map(local_functions)
+    fn_nodes = [
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    fn_names = [n.name for n in fn_nodes]
+    defined_functions = set(fn_names)
+    entry_functions = _infer_python_entries(fn_nodes, local_map)
+
+    py_index = _PythonGlobalIndex(tree=tree, source=source, local_map=local_map)
+    py_index.build()
+
+    _run_global_fixpoint(
+        function_names=list(local_map.keys()),
+        global_sets=py_index.global_sets,
+        call_relations=py_index.call_relations,
+        ret_relations=py_index.ret_relations,
+        read_write_relations=py_index.global_symbol_relations,
+    )
+
+    call_edges = [
+        GlobalCallEdge(
+            caller=caller,
+            callee=callee,
+            call_node_id=node_id,
+            call_line_no=line_no,
+            call_code=code,
+        ).to_dict()
+        for caller, callee, node_id, line_no, code in py_index.materialized_call_edges()
+    ]
+
+    ret_edges = [
+        GlobalRetEdge(
+            callee=callee,
+            caller=caller,
+            caller_node_id=node_id,
+            caller_line_no=line_no,
+            caller_code=code,
+        ).to_dict()
+        for callee, caller, node_id, line_no, code in py_index.materialized_ret_edges()
+    ]
+
+    global_state_edges = [
+        GlobalStateEdge(
+            symbol=symbol,
+            src_function=src_fn,
+            dst_function=dst_fn,
+            src_node_id=src_node,
+            dst_node_id=dst_node,
+        ).to_dict()
+        for symbol, src_fn, dst_fn, src_node, dst_node in py_index.materialized_global_edges()
+    ]
+
+    function_results = []
+    for fn_name, local_info in local_map.items():
+        global_nodes = sorted(py_index.global_sets.get(fn_name, set()))
+        local_nodes = sorted(set(local_info.get("beacon_node_ids", []) or []))
+
+        imported_from_calls = sorted(set(global_nodes) - set(local_nodes))
+        imported_from_returns = sorted(py_index.imported_by_ret.get(fn_name, set()))
+        imported_from_globals = sorted(py_index.imported_by_global.get(fn_name, set()))
+
+        function_results.append(
+            GlobalFunctionBeacon(
+                function_name=fn_name,
+                signature=local_info.get("signature"),
+                lang="python",
+                local_beacon_node_ids=local_nodes,
+                global_beacon_node_ids=global_nodes,
+                imported_from_calls=imported_from_calls,
+                imported_from_returns=imported_from_returns,
+                imported_from_globals=imported_from_globals,
+                warnings=[],
+            ).to_dict()
+        )
+
+    program_beacon_node_ids = sorted({
+        nid
+        for entry in entry_functions
+        for nid in py_index.global_sets.get(entry, set())
+    })
+
+    return GlobalRulesResult(
+        lang="python",
+        entry_functions=entry_functions,
+        functions=function_results,
+        call_edges=call_edges,
+        ret_edges=ret_edges,
+        global_state_edges=global_state_edges,
+        program_beacon_node_ids=program_beacon_node_ids,
+        warnings=warnings,
+        debug={
+            "function_count": len(fn_nodes),
+            "local_function_count": len(local_map),
+            "entry_count": len(entry_functions),
+            "defined_functions": sorted(defined_functions),
+        },
+    )
+
+
+class _PythonGlobalIndex:
+    def __init__(self, tree: ast.AST, source: str, local_map: Dict[str, Dict[str, Any]]) -> None:
+        self.tree = tree
+        self.source = source
+        self.lines = source.splitlines()
+        self.local_map = local_map
+
+        self.fn_nodes: Dict[str, ast.AST] = {}
+        self.global_sets: Dict[str, Set[str]] = {}
+        self.call_relations: Dict[str, List[Tuple[str, str, int, str]]] = {}
+        self.ret_relations: Dict[str, List[Tuple[str, int, str]]] = {}
+        self.global_symbol_relations: Dict[str, Dict[str, List[Tuple[str, str]]]] = {}
+        self.imported_by_ret: Dict[str, Set[str]] = {}
+        self.imported_by_global: Dict[str, Set[str]] = {}
+
+    def build(self) -> None:
+        self._index_functions()
+        self._seed_local_to_global()
+        self._index_calls()
+        self._index_return_flow()
+        self._index_global_symbols()
+
+    def _index_functions(self) -> None:
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.fn_nodes[node.name] = node
+
+    def _seed_local_to_global(self) -> None:
+        for fn_name, info in self.local_map.items():
+            self.global_sets[fn_name] = set(info.get("beacon_node_ids", []) or [])
+            self.call_relations[fn_name] = []
+            self.ret_relations[fn_name] = []
+            self.imported_by_ret[fn_name] = set()
+            self.imported_by_global[fn_name] = set()
+
+    def _index_calls(self) -> None:
+        for fn_name, info in self.local_map.items():
+            node = self.fn_nodes.get(fn_name)
+            if node is None:
+                continue
+
+            local_ids = set(info.get("beacon_node_ids", []) or [])
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call):
+                    callee = _python_call_name(child)
+                    if callee not in self.local_map:
+                        continue
+
+                    stmt = _nearest_python_stmt(node, child)
+                    if stmt is None:
+                        continue
+                    stmt_id = _python_stmt_node_id(fn_name, stmt)
+                    if stmt_id not in local_ids:
+                        continue
+
+                    line_no = getattr(stmt, "lineno", -1)
+                    code = _safe_source_segment(self.source, stmt)
+                    self.call_relations[fn_name].append((callee, stmt_id, line_no, code))
+
+    def _index_return_flow(self) -> None:
+        """
+        Heuristic G-RET:
+        if a beacon statement in caller assigns from callee(...) or returns callee(...),
+        then import callee global beacons to caller.
+        """
+        for fn_name, info in self.local_map.items():
+            node = self.fn_nodes.get(fn_name)
+            if node is None:
+                continue
+
+            local_ids = set(info.get("beacon_node_ids", []) or [])
+            for child in ast.walk(node):
+                if isinstance(child, (ast.Assign, ast.AnnAssign, ast.Return)):
+                    stmt_id = _python_stmt_node_id(fn_name, child)
+                    if stmt_id not in local_ids:
+                        continue
+
+                    calls = _python_calls_in_stmt(child)
+                    for call in calls:
+                        callee = _python_call_name(call)
+                        if callee not in self.local_map:
+                            continue
+                        line_no = getattr(child, "lineno", -1)
+                        code = _safe_source_segment(self.source, child)
+                        self.ret_relations[fn_name].append((callee, line_no, code))
+
+    def _index_global_symbols(self) -> None:
+        module_globals = _python_module_globals(self.tree)
+        if not module_globals:
+            return
+
+        reads: Dict[str, List[Tuple[str, str]]] = {g: [] for g in module_globals}
+        writes: Dict[str, List[Tuple[str, str]]] = {g: [] for g in module_globals}
+
+        for fn_name, node in self.fn_nodes.items():
+            for child in ast.walk(node):
+                stmt = _nearest_python_stmt(node, child)
+                if stmt is None:
+                    continue
+                stmt_id = _python_stmt_node_id(fn_name, stmt)
+
+                if isinstance(child, ast.Name):
+                    if child.id not in module_globals:
+                        continue
+                    if isinstance(child.ctx, ast.Load):
+                        reads[child.id].append((fn_name, stmt_id))
+                    elif isinstance(child.ctx, (ast.Store, ast.Del)):
+                        writes[child.id].append((fn_name, stmt_id))
+
+        for sym in module_globals:
+            self.global_symbol_relations[sym] = {
+                "reads": reads.get(sym, []),
+                "writes": writes.get(sym, []),
+            }
+
+    def materialized_call_edges(self) -> List[Tuple[str, str, str, int, str]]:
+        out = []
+        for caller, rels in self.call_relations.items():
+            for callee, stmt_id, line_no, code in rels:
+                if stmt_id in self.global_sets.get(caller, set()):
+                    out.append((caller, callee, stmt_id, line_no, code))
+        return out
+
+    def materialized_ret_edges(self) -> List[Tuple[str, str, str, int, str]]:
+        out = []
+        for caller, rels in self.ret_relations.items():
+            for callee, line_no, code in rels:
+                synthetic_node = f"py:{caller}:{line_no}:retflow"
+                if any(n in self.global_sets.get(caller, set()) for n in self.global_sets.get(callee, set())):
+                    out.append((callee, caller, synthetic_node, line_no, code))
+                    self.imported_by_ret[caller].update(self.global_sets.get(callee, set()))
+        return out
+
+    def materialized_global_edges(self) -> List[Tuple[str, str, str, str, str]]:
+        out = []
+        for sym, rels in self.global_symbol_relations.items():
+            reads = rels.get("reads", [])
+            writes = rels.get("writes", [])
+            if not reads or not writes:
+                continue
+
+            read_hit = any(
+                node_id in self.global_sets.get(fn_name, set())
+                for fn_name, node_id in reads
+            )
+            write_hit = any(
+                node_id in self.global_sets.get(fn_name, set())
+                for fn_name, node_id in writes
+            )
+            if not (read_hit or write_hit):
+                continue
+
+            for src_fn, src_node in writes:
+                for dst_fn, dst_node in reads:
+                    out.append((sym, src_fn, dst_fn, src_node, dst_node))
+                    self.imported_by_global[dst_fn].add(src_node)
+                    self.imported_by_global[src_fn].add(dst_node)
+        return out
+
+
+# ============================================================
+# Java global logic
+# ============================================================
+
+def _build_global_java(
+    source: str,
+    class_level: str,
+    local_functions: List[Dict[str, Any]],
+) -> GlobalRulesResult:
+    warnings: List[str] = []
+    local_map = _local_function_map(local_functions)
+    entry_functions = _infer_java_entries(source, local_map)
+
+    j_index = _JavaGlobalIndex(
+        source=source,
+        class_level=class_level,
+        local_map=local_map,
+    )
+    j_index.build()
+
+    _run_global_fixpoint(
+        function_names=list(local_map.keys()),
+        global_sets=j_index.global_sets,
+        call_relations=j_index.call_relations,
+        ret_relations=j_index.ret_relations,
+        read_write_relations=j_index.global_symbol_relations,
+    )
+
+    call_edges = [
+        GlobalCallEdge(
+            caller=caller,
+            callee=callee,
+            call_node_id=node_id,
+            call_line_no=line_no,
+            call_code=code,
+        ).to_dict()
+        for caller, callee, node_id, line_no, code in j_index.materialized_call_edges()
+    ]
+
+    ret_edges = [
+        GlobalRetEdge(
+            callee=callee,
+            caller=caller,
+            caller_node_id=node_id,
+            caller_line_no=line_no,
+            caller_code=code,
+        ).to_dict()
+        for callee, caller, node_id, line_no, code in j_index.materialized_ret_edges()
+    ]
+
+    global_state_edges = [
+        GlobalStateEdge(
+            symbol=symbol,
+            src_function=src_fn,
+            dst_function=dst_fn,
+            src_node_id=src_node,
+            dst_node_id=dst_node,
+        ).to_dict()
+        for symbol, src_fn, dst_fn, src_node, dst_node in j_index.materialized_global_edges()
+    ]
+
+    function_results = []
+    for fn_name, local_info in local_map.items():
+        global_nodes = sorted(j_index.global_sets.get(fn_name, set()))
+        local_nodes = sorted(set(local_info.get("beacon_node_ids", []) or []))
+        imported_from_calls = sorted(set(global_nodes) - set(local_nodes))
+        imported_from_returns = sorted(j_index.imported_by_ret.get(fn_name, set()))
+        imported_from_globals = sorted(j_index.imported_by_global.get(fn_name, set()))
+
+        function_results.append(
+            GlobalFunctionBeacon(
+                function_name=fn_name,
+                signature=local_info.get("signature"),
+                lang="java",
+                local_beacon_node_ids=local_nodes,
+                global_beacon_node_ids=global_nodes,
+                imported_from_calls=imported_from_calls,
+                imported_from_returns=imported_from_returns,
+                imported_from_globals=imported_from_globals,
+                warnings=[],
+            ).to_dict()
+        )
+
+    program_beacon_node_ids = sorted({
+        nid
+        for entry in entry_functions
+        for nid in j_index.global_sets.get(entry, set())
+    })
+
+    return GlobalRulesResult(
+        lang="java",
+        entry_functions=entry_functions,
+        functions=function_results,
+        call_edges=call_edges,
+        ret_edges=ret_edges,
+        global_state_edges=global_state_edges,
+        program_beacon_node_ids=program_beacon_node_ids,
+        warnings=warnings,
+        debug={
+            "local_function_count": len(local_map),
+            "entry_count": len(entry_functions),
+        },
+    )
+
+
+class _JavaGlobalIndex:
+    def __init__(self, source: str, class_level: str, local_map: Dict[str, Dict[str, Any]]) -> None:
+        self.source = source
+        self.class_level = class_level
+        self.local_map = local_map
+
+        self.methods = _extract_java_method_blocks(source)
+        self.global_sets: Dict[str, Set[str]] = {}
+        self.call_relations: Dict[str, List[Tuple[str, str, int, str]]] = {}
+        self.ret_relations: Dict[str, List[Tuple[str, int, str]]] = {}
+        self.global_symbol_relations: Dict[str, Dict[str, List[Tuple[str, str]]]] = {}
+        self.imported_by_ret: Dict[str, Set[str]] = {}
+        self.imported_by_global: Dict[str, Set[str]] = {}
+
+    def build(self) -> None:
+        self._seed_local_to_global()
+        self._index_calls()
+        self._index_return_flow()
+        self._index_global_symbols()
+
+    def _seed_local_to_global(self) -> None:
+        for fn_name, info in self.local_map.items():
+            self.global_sets[fn_name] = set(info.get("beacon_node_ids", []) or [])
+            self.call_relations[fn_name] = []
+            self.ret_relations[fn_name] = []
+            self.imported_by_ret[fn_name] = set()
+            self.imported_by_global[fn_name] = set()
+
+    def _index_calls(self) -> None:
+        for method_name, signature, start_line, block_lines in self.methods:
+            if method_name not in self.local_map:
+                continue
+            local_ids = set(self.local_map[method_name].get("beacon_node_ids", []) or [])
+
+            for offset, raw in enumerate(block_lines):
+                line_no = start_line + offset
+                code = raw.rstrip()
+                node_id = f"java:{method_name}:{line_no}"
+                if node_id not in local_ids:
+                    continue
+
+                callees = _java_called_function_names(code)
+                for callee in callees:
+                    if callee in self.local_map and callee != method_name:
+                        self.call_relations[method_name].append((callee, node_id, line_no, code))
+
+    def _index_return_flow(self) -> None:
+        for method_name, signature, start_line, block_lines in self.methods:
+            if method_name not in self.local_map:
+                continue
+            local_ids = set(self.local_map[method_name].get("beacon_node_ids", []) or [])
+
+            for offset, raw in enumerate(block_lines):
+                line_no = start_line + offset
+                code = raw.rstrip()
+                node_id = f"java:{method_name}:{line_no}"
+                if node_id not in local_ids:
+                    continue
+
+                callees = _java_called_function_names(code)
+                if "=" in code or "return " in code:
+                    for callee in callees:
+                        if callee in self.local_map and callee != method_name:
+                            self.ret_relations[method_name].append((callee, line_no, code))
+
+    def _index_global_symbols(self) -> None:
+        global_fields = _java_class_fields(self.class_level)
+        if not global_fields:
+            return
+
+        reads: Dict[str, List[Tuple[str, str]]] = {g: [] for g in global_fields}
+        writes: Dict[str, List[Tuple[str, str]]] = {g: [] for g in global_fields}
+
+        for method_name, signature, start_line, block_lines in self.methods:
+            if method_name not in self.local_map:
+                continue
+            for offset, raw in enumerate(block_lines):
+                line_no = start_line + offset
+                code = raw.rstrip()
+                node_id = f"java:{method_name}:{line_no}"
+
+                for field in global_fields:
+                    if re.search(rf"\b{re.escape(field)}\b", code):
+                        if _looks_like_java_write_to_symbol(code, field):
+                            writes[field].append((method_name, node_id))
+                        else:
+                            reads[field].append((method_name, node_id))
+
+        for sym in global_fields:
+            self.global_symbol_relations[sym] = {
+                "reads": reads.get(sym, []),
+                "writes": writes.get(sym, []),
+            }
+
+    def materialized_call_edges(self) -> List[Tuple[str, str, str, int, str]]:
+        out = []
+        for caller, rels in self.call_relations.items():
+            for callee, stmt_id, line_no, code in rels:
+                if stmt_id in self.global_sets.get(caller, set()):
+                    out.append((caller, callee, stmt_id, line_no, code))
+        return out
+
+    def materialized_ret_edges(self) -> List[Tuple[str, str, str, int, str]]:
+        out = []
+        for caller, rels in self.ret_relations.items():
+            for callee, line_no, code in rels:
+                synthetic_node = f"java:{caller}:{line_no}:retflow"
+                if any(n in self.global_sets.get(caller, set()) for n in self.global_sets.get(callee, set())):
+                    out.append((callee, caller, synthetic_node, line_no, code))
+                    self.imported_by_ret[caller].update(self.global_sets.get(callee, set()))
+        return out
+
+    def materialized_global_edges(self) -> List[Tuple[str, str, str, str, str]]:
+        out = []
+        for sym, rels in self.global_symbol_relations.items():
+            reads = rels.get("reads", [])
+            writes = rels.get("writes", [])
+            if not reads or not writes:
+                continue
+
+            read_hit = any(
+                node_id in self.global_sets.get(fn_name, set())
+                for fn_name, node_id in reads
+            )
+            write_hit = any(
+                node_id in self.global_sets.get(fn_name, set())
+                for fn_name, node_id in writes
+            )
+            if not (read_hit or write_hit):
+                continue
+
+            for src_fn, src_node in writes:
+                for dst_fn, dst_node in reads:
+                    out.append((sym, src_fn, dst_fn, src_node, dst_node))
+                    self.imported_by_global[dst_fn].add(src_node)
+                    self.imported_by_global[src_fn].add(dst_node)
+        return out
+
+
+# ============================================================
+# Fixpoint engine
+# ============================================================
+
+def _run_global_fixpoint(
+    function_names: List[str],
+    global_sets: Dict[str, Set[str]],
+    call_relations: Dict[str, List[Tuple[str, str, int, str]]],
+    ret_relations: Dict[str, List[Tuple[str, int, str]]],
+    read_write_relations: Dict[str, Dict[str, List[Tuple[str, str]]]],
+) -> None:
     """
-    FuncKey format in state.ASTIndex.register_function():  "<file>::<qualname>"
+    Implements:
+    - G-BASE   : local seeds already copied into global_sets
+    - G-CALL   : if beacon call-site in caller, import callee global beacons
+    - G-RET    : if return-flow relation exists for relevant beacon stmt, import callee global beacons
+    - G-GLOB   : if any read/write of global symbol is beacon-relevant, conservatively connect all reads/writes
     """
-    s = str(key)
-    if "::" not in s:
-        return ("", s)
-    file, qual = s.split("::", 1)
-    return file, qual
+    changed = True
+    while changed:
+        changed = False
+
+        # G-CALL
+        for caller in function_names:
+            for callee, call_node_id, _line_no, _code in call_relations.get(caller, []):
+                if call_node_id in global_sets.get(caller, set()):
+                    before = len(global_sets[caller])
+                    global_sets[caller].update(global_sets.get(callee, set()))
+                    if len(global_sets[caller]) > before:
+                        changed = True
+
+        # G-RET
+        for caller in function_names:
+            for callee, _line_no, _code in ret_relations.get(caller, []):
+                before = len(global_sets[caller])
+                global_sets[caller].update(global_sets.get(callee, set()))
+                if len(global_sets[caller]) > before:
+                    changed = True
+
+        # G-GLOB / G-GLOB-2
+        for _sym, rels in read_write_relations.items():
+            reads = rels.get("reads", [])
+            writes = rels.get("writes", [])
+
+            read_hit = any(
+                node_id in global_sets.get(fn_name, set())
+                for fn_name, node_id in reads
+            )
+            write_hit = any(
+                node_id in global_sets.get(fn_name, set())
+                for fn_name, node_id in writes
+            )
+            if not (read_hit or write_hit):
+                continue
+
+            full_cluster = reads + writes
+            for dst_fn, _dst_node in full_cluster:
+                before = len(global_sets[dst_fn])
+                for src_fn, src_node in full_cluster:
+                    global_sets[dst_fn].add(src_node)
+                if len(global_sets[dst_fn]) > before:
+                    changed = True
 
 
-def _get_call_name(call: ast.Call) -> Optional[str]:
-    """
-    Best-effort extraction of a call target name.
-    - foo(...) -> "foo"
-    - obj.foo(...) -> "foo"
-    - pkg.mod.foo(...) -> "foo"
-    """
-    fn = call.func
-    if isinstance(fn, ast.Name):
-        return fn.id
-    if isinstance(fn, ast.Attribute):
-        return fn.attr
-    return None
+# ============================================================
+# Entry inference
+# ============================================================
+
+def _infer_python_entries(fn_nodes: List[ast.AST], local_map: Dict[str, Dict[str, Any]]) -> List[str]:
+    names = [n.name for n in fn_nodes]
+
+    # EC9: prefer main, else public-API-like top-level functions :contentReference[oaicite:0]{index=0}
+    if "main" in names and "main" in local_map:
+        return ["main"]
+
+    api_like = []
+    for name in names:
+        if name.startswith("_"):
+            continue
+        if name in local_map:
+            api_like.append(name)
+
+    return api_like[:3] if api_like else list(local_map.keys())[:1]
 
 
-def _collect_names(expr: ast.AST) -> Set[str]:
-    """
-    Collect Name identifiers used in an expression subtree.
-    """
-    out: Set[str] = set()
-    for n in ast.walk(expr):
-        if isinstance(n, ast.Name):
-            out.add(n.id)
+def _infer_java_entries(source: str, local_map: Dict[str, Dict[str, Any]]) -> List[str]:
+    names = set(local_map.keys())
+
+    if "main" in names:
+        return ["main"]
+
+    public_methods = []
+    for method_name, signature, _start, _block in _extract_java_method_blocks(source):
+        if method_name not in names:
+            continue
+        if "public " in signature:
+            public_methods.append(method_name)
+
+    return public_methods[:3] if public_methods else list(local_map.keys())[:1]
+
+
+# ============================================================
+# Shared helpers
+# ============================================================
+
+def _local_function_map(local_functions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out = {}
+    for item in local_functions:
+        name = item.get("function_name")
+        if name:
+            out[name] = item
     return out
 
 
-def _collect_return_calls(fn_node: ast.AST) -> Set[str]:
-    """
-    Collect call names that appear inside return expressions of a function.
-    """
-    calls: Set[str] = set()
-    for n in ast.walk(fn_node):
-        if isinstance(n, ast.Return) and n.value is not None:
-            for sub in ast.walk(n.value):
-                if isinstance(sub, ast.Call):
-                    name = _get_call_name(sub)
-                    if name:
-                        calls.add(name)
-    return calls
+def _as_dict(obj: Any) -> Dict[str, Any]:
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
+    return {"value": obj}
 
 
-def _assigned_from_calls(fn_node: ast.AST) -> Dict[str, str]:
-    """
-    Map var_name -> call_name for simple patterns:
-        x = foo(...)
-    """
-    m: Dict[str, str] = {}
+def _read_text(data: Dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    return value if isinstance(value, str) else str(value or "")
+
+
+# ---------------- Python helpers ----------------
+
+def _python_call_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        parts = []
+        cur = call.func
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return "<call>"
+
+
+def _python_stmt_node_id(function_name: str, stmt: ast.AST) -> str:
+    return f"py:{function_name}:{getattr(stmt, 'lineno', -1)}:{type(stmt).__name__}"
+
+
+def _nearest_python_stmt(fn_node: ast.AST, child: ast.AST) -> Optional[ast.AST]:
+    best = None
+    best_span = None
     for n in ast.walk(fn_node):
-        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
-            call_name = _get_call_name(n.value)
-            if not call_name:
+        if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return, ast.Raise, ast.Expr, ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith, ast.Assert)):
+            if not hasattr(n, "lineno") or not hasattr(child, "lineno"):
                 continue
-            # Only handle simple 'x = call(...)'
-            if len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
-                m[n.targets[0].id] = call_name
-        elif isinstance(n, ast.AnnAssign) and isinstance(n.value, ast.Call) and isinstance(n.target, ast.Name):
-            call_name = _get_call_name(n.value)
-            if call_name:
-                m[n.target.id] = call_name
-    return m
+            if n.lineno <= child.lineno <= getattr(n, "end_lineno", n.lineno):
+                span = getattr(n, "end_lineno", n.lineno) - n.lineno
+                if best is None or span < best_span:
+                    best = n
+                    best_span = span
+    return best
 
 
-def _used_in_outputs(fn_node: ast.AST) -> Set[str]:
-    """
-    Names that appear in return expressions (MVP output dependency seed).
-    """
-    used: Set[str] = set()
-    for n in ast.walk(fn_node):
-        if isinstance(n, ast.Return) and n.value is not None:
-            used |= _collect_names(n.value)
-    return used
-
-
-def _resolve_project_funcs(state: ReasoningState, call_name: str) -> List[FuncKey]:
-    """
-    Resolve a call name to candidate FuncKeys in the indexed project.
-
-    MVP heuristic:
-    - exact qualname match (qual == call_name)
-    - suffix match (qual endswith ".<call_name>")
-    - method match (qual endswith ":<call_name>" if you use ":" in qualnames)
-    """
-    cands: List[FuncKey] = []
-    for fk in state.ast_index.functions.keys():
-        _, qual = _parse_funckey(fk)
-        if qual == call_name or qual.endswith(f".{call_name}") or qual.endswith(f":{call_name}"):
-            cands.append(fk)
-    return cands
-
-
-def _make_callsite_node(state: ReasoningState, call: ast.Call, file: str, qualname: str) -> BeaconNode:
-    """
-    Create a beacon node representing the callsite (MVP).
-    """
-    anch = anchor_of(call, file=file, qualname=qualname)
-    kind = ast_kind(call)
-    idx = state.next_local_index(anch, kind)
-    nid = make_node_id(anch, kind, idx)
-    meta = {"call_name": _get_call_name(call)}
-    return BeaconNode(node_id=nid, anchor=anch, kind=kind, code=None, meta=meta)
-
-
-def _tag_node_meta(state: ReasoningState, node_id: NodeID, **kwargs) -> None:
-    """
-    BeaconNode is frozen; tagging requires overwrite with updated meta.
-    """
-    node = state.get_node(node_id)
-    if node is None:
-        return
-    new_meta = dict(node.meta)
-    new_meta.update(kwargs)
-    new_node = BeaconNode(
-        node_id=node.node_id,
-        anchor=node.anchor,
-        kind=node.kind,
-        code=node.code,
-        meta=new_meta,
-    )
-    # Overwrite the stored node (keep provenance history)
-    state.add_node(new_node, prov=ProvenanceStep(rule=RuleName.G_BASE, note="meta_tag"), overwrite=True)
-
-
-# ----------------------------
-# Global rules (MVP)
-# ----------------------------
-
-def apply_global(state: ReasoningState, entry_key: FuncKey) -> None:
-    """
-    Run MVP global reasoning on the entry function.
-
-    This function assumes local reasoning has already been run for the entry function.
-    If callees need local beacons, this function may call local rules (inside logic boundary).
-    """
-    if not state.config.enable_global:
-        return
-
-    entry_fn = state.ast_index.get_function(entry_key)
-    if entry_fn is None:
-        return
-
-    entry_file, entry_qual = _parse_funckey(entry_key)
-
-    # -------- G-BASE: tag entry function beacons as global base
-    for nid, node in list(state.nodes.items()):
-        if node.anchor.file == entry_file and node.anchor.qualname == entry_qual:
-            # tag meta; preserve node_id
-            new_meta = dict(node.meta)
-            new_meta["scope"] = "global_base"
-            new_node = BeaconNode(
-                node_id=node.node_id,
-                anchor=node.anchor,
-                kind=node.kind,
-                code=node.code,
-                meta=new_meta,
-            )
-            state.add_node(
-                new_node,
-                prov=ProvenanceStep(rule=RuleName.G_BASE, note="entry_base"),
-                overwrite=True,
-            )
-
-    # -------- G-CALL: find semantically relevant calls
-    used_names = _used_in_outputs(entry_fn)
-    var_to_call = _assigned_from_calls(entry_fn)
-    return_calls = _collect_return_calls(entry_fn)
-
-    relevant_call_names: Set[str] = set()
-
-    # If a variable used in outputs comes from a call, include that call
-    for var, call_name in var_to_call.items():
-        if var in used_names:
-            relevant_call_names.add(call_name)
-
-    # Calls directly in return expressions are relevant
-    relevant_call_names |= return_calls
-
-    # Fallback: if nothing found, include all calls we can see (conservative)
-    all_seen_calls: Set[str] = set()
-    for n in ast.walk(entry_fn):
-        if isinstance(n, ast.Call):
-            cn = _get_call_name(n)
-            if cn:
-                all_seen_calls.add(cn)
-    if not relevant_call_names:
-        relevant_call_names = set(all_seen_calls)
-
-    # Optional filter: if state.symbols.calls exists, intersect to reduce noise
-    if state.symbols.calls:
-        # Keep calls that either appear in symbols.calls or can be resolved to project funcs
-        filtered: Set[str] = set()
-        for cn in relevant_call_names:
-            if cn in state.symbols.calls or _resolve_project_funcs(state, cn):
-                filtered.add(cn)
-        if filtered:
-            relevant_call_names = filtered
-
-    # -------- Inline callees
-    # We will:
-    # 1) create callsite nodes for each relevant call occurrence (MVP)
-    # 2) resolve callee FuncKey candidates from project index
-    # 3) ensure local beacons for callee exist (call rules_local.apply_local if available)
-    # 4) tag callee nodes as inlined, and add CALL edges from callsite->callee representative node
-
-    # Import locally to avoid circulars; rules_local is within logic so it is allowed.
+def _safe_source_segment(source: str, node: ast.AST) -> str:
     try:
-        from .rules_local import apply_local  # type: ignore
+        return ast.get_source_segment(source, node) or type(node).__name__
     except Exception:
-        apply_local = None  # type: ignore
+        return type(node).__name__
 
-    inlined_count = 0
 
-    for n in ast.walk(entry_fn):
-        if not isinstance(n, ast.Call):
+def _python_calls_in_stmt(stmt: ast.AST) -> List[ast.Call]:
+    return [n for n in ast.walk(stmt) if isinstance(n, ast.Call)]
+
+
+def _python_module_globals(tree: ast.AST) -> Set[str]:
+    out = set()
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out.add(target.id)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                out.add(node.target.id)
+    return out
+
+
+# ---------------- Java helpers ----------------
+
+def _extract_java_method_blocks(source: str) -> List[Tuple[str, str, int, List[str]]]:
+    lines = source.splitlines()
+    results: List[Tuple[str, str, int, List[str]]] = []
+
+    method_sig_re = re.compile(
+        r'^\s*(?:public|protected|private|static|final|native|synchronized|abstract|default|strictfp|\s)+'
+        r'.*?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:throws\s+[^{]+)?\{?\s*$'
+    )
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = method_sig_re.match(line)
+        if not m:
+            i += 1
             continue
 
-        call_name = _get_call_name(n)
-        if not call_name or call_name not in relevant_call_names:
+        method_name = m.group(1)
+        signature = line.rstrip()
+
+        brace_line = i
+        while brace_line < len(lines) and "{" not in lines[brace_line]:
+            brace_line += 1
+        if brace_line >= len(lines):
+            i += 1
             continue
 
-        # Create a callsite beacon node (even if local rules didn't include it)
-        call_node = _make_callsite_node(state, n, entry_file, entry_qual)
-        state.add_node(
-            call_node,
-            prov=ProvenanceStep(rule=RuleName.G_CALL, note="callsite"),
-            overwrite=False,
-        )
+        depth = 0
+        block_start = brace_line
+        block_end = brace_line
 
-        # Resolve callee candidates in project
-        callee_keys = _resolve_project_funcs(state, call_name)
-        if not callee_keys:
+        for j in range(brace_line, len(lines)):
+            depth += lines[j].count("{")
+            depth -= lines[j].count("}")
+            if depth == 0:
+                block_end = j
+                break
+
+        block_lines = lines[block_start:block_end + 1]
+        results.append((method_name, signature, block_start + 1, block_lines))
+        i = block_end + 1
+
+    return results
+
+
+def _java_called_function_names(code: str) -> List[str]:
+    calls = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', code)
+    blacklist = {
+        "if", "for", "while", "switch", "catch", "return", "new", "throw",
+        "super", "this", "synchronized",
+    }
+    return [c for c in calls if c not in blacklist]
+
+
+def _java_class_fields(class_level: str) -> Set[str]:
+    out = set()
+    for line in class_level.splitlines():
+        s = line.strip().rstrip(";")
+        if not s or s.startswith("import "):
             continue
+        m = re.match(r'^(?:[A-Za-z_<>\[\]]+\s+)+([A-Za-z_][A-Za-z0-9_]*)$', s)
+        if m and "(" not in s:
+            out.add(m.group(1))
+    return out
 
-        # Deterministically pick the first candidate (stable by lexical order)
-        callee_keys = sorted(callee_keys, key=str)
-        callee_key = callee_keys[0]
-        callee_file, callee_qual = _parse_funckey(callee_key)
 
-        # Ensure callee local beacons exist (if local rule is available)
-        if apply_local is not None:
-            callee_fn = state.ast_index.get_function(callee_key)
-            if callee_fn is not None:
-                apply_local(state, callee_key)  # Local reasoning is still within logic/
+def _looks_like_java_write_to_symbol(code: str, symbol: str) -> bool:
+    return bool(re.search(rf'\b{re.escape(symbol)}\b\s*=', code))
 
-        # Collect callee beacon nodes currently in state
-        callee_node_ids: List[NodeID] = [
-            nid for nid, bn in state.nodes.items()
-            if bn.anchor.file == callee_file and bn.anchor.qualname == callee_qual
-        ]
-        callee_node_ids = sorted(callee_node_ids, key=str)
-        if not callee_node_ids:
-            continue
 
-        # Tag callee nodes as inlined into entry closure (MVP)
-        for nid in callee_node_ids:
-            node = state.get_node(nid)
-            if node is None:
-                continue
-            new_meta = dict(node.meta)
-            new_meta["inlined_into"] = str(entry_key)
-            new_meta["inlined_from"] = str(callee_key)
-            new_node = BeaconNode(
-                node_id=node.node_id,
-                anchor=node.anchor,
-                kind=node.kind,
-                code=node.code,
-                meta=new_meta,
-            )
-            state.add_node(
-                new_node,
-                prov=ProvenanceStep(rule=RuleName.G_CALL, src=call_node.node_id, note="inline"),
-                overwrite=True,
-            )
-
-        # Add one representative CALL edge: callsite -> callee_first_beacon
-        rep = callee_node_ids[0]
-        edge = BeaconEdge(
-            src=call_node.node_id,
-            dst=rep,
-            kind=EdgeKind.CALL,
-            meta={"call_name": call_name, "callee": str(callee_key)},
-        )
-        state.add_edge(edge, prov=ProvenanceStep(rule=RuleName.G_CALL, src=call_node.node_id, note="call_edge"))
-
-        inlined_count += 1
-        if state.config.max_global_inline is not None and inlined_count >= state.config.max_global_inline:
-            break
-
-    # -------- G-RET (stub)
-    # TODO: Add return-flow edges (EdgeKind.RET) once return reasoning is implemented.
-
-    # -------- G-GLOB (stub)
-    # TODO: Add conservative global-state interactions (EdgeKind.GLOBAL) once implemented.
-
-    # -------- P-ENTRY: finalize entry closure (MVP tagging)
-    # Tag all nodes that are either entry base or inlined_into entry as part of the entry closure.
-    for nid, node in list(state.nodes.items()):
-        if node.meta.get("scope") == "global_base" or node.meta.get("inlined_into") == str(entry_key):
-            new_meta = dict(node.meta)
-            new_meta["entry_closure"] = str(entry_key)
-            new_node = BeaconNode(
-                node_id=node.node_id,
-                anchor=node.anchor,
-                kind=node.kind,
-                code=node.code,
-                meta=new_meta,
-            )
-            state.add_node(
-                new_node,
-                prov=ProvenanceStep(rule=RuleName.P_ENTRY, note="entry_finalize"),
-                overwrite=True,
-            )
+# ============================================================
+# end
+# ============================================================

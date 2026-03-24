@@ -1,4 +1,0 @@
-{
-  "error": "LLMError(\"LLM request failed: No connection adapters were found for '${env:MODEL_BASE_URL,https://openrouter.ai/api/v1}/chat/completions'\")",
-  "attempt": 2
-}

@@ -1,390 +1,321 @@
-# src/beacon_system/agents/generator.py
 # -*- coding: utf-8 -*-
 
 """
-Code generator / reviser for Beacon agent workflow.
+Code Generator Agent (strict code-only mode)
 
-Scope:
-- Consume ONLY:
-  Task + BeaconIR + Constraints + selected thought + LLMClient
-- Produce:
-  GenerationPayload + FormatValidationResult
-- Support:
-  initial generation and minimal revision
+Design goals:
+- Generate code only
+- No planning / no scoring / no verification
+- Consume only structured task inputs + LLM client
+- Prompt must explicitly forbid explanations and extra text
+- Keep implementation simple, deterministic, and easy to debug
 
-Non-goals:
-- no Beacon reasoning reconstruction
-- no scoring
-- no execution
-- no verifier logic duplication
+Accepted inputs:
+- task context
+- target file / target function
+- beacon_tree
+- signature_hints
+- constraint_summary
+- injected LLMClient
+
+Output:
+- generated_code
+- prompt_snapshot
+- raw_response
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, Optional
+import json
 import re
-from dataclasses import dataclass
-from typing import Optional, Tuple
 
-from ..llm.client import LLMClient, LLMError
-from ..types import (
-    BeaconIR,
-    CodeBlock,
-    Constraints,
-    FormatValidationResult,
-    GenerationPayload,
-    OutputFormatSpec,
-    TaskObject,
-    ThoughtCandidate,
-)
-from .prompts import make_generate_messages, make_revise_messages
+from ..llm.client import LLMClient
 
 
-def _safe_text(text: Optional[str]) -> str:
-    return str(text or "")
+# ============================================================
+# helpers
+# ============================================================
 
-
-def _guess_language(task: TaskObject) -> str:
-    lang = str(task.lang or "").strip().lower()
-    if lang:
-        return lang
-    return "python"
-
-
-def _default_filename(task: TaskObject) -> str:
-    return str(task.target.get("file") or "generated_code.txt")
-
-
-def _extract_fenced_code(raw_text: str) -> Optional[str]:
+def _stable_json(obj: Any) -> str:
     """
-    Extract first fenced code block if present.
+    Stable JSON string for prompt construction and artifact trace.
+    """
+    return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+
+
+def _as_dict(obj: Any) -> Dict[str, Any]:
+    """
+    Tolerant object-to-dict conversion.
+
     Supports:
-    ```python
-    ...
-    ```
+    - dict
+    - dataclass-like objects
+    - normal objects with __dict__
+    - fallback to {"value": str(obj)}
     """
-    text = _safe_text(raw_text)
-    pattern = re.compile(r"```[a-zA-Z0-9_\-]*\n(.*?)```", re.DOTALL)
-    m = pattern.search(text)
-    if not m:
-        return None
-    return m.group(1).strip()
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "__dataclass_fields__"):
+        try:
+            return asdict(obj)
+        except Exception:
+            pass
+    if hasattr(obj, "__dict__"):
+        try:
+            return dict(vars(obj))
+        except Exception:
+            pass
+    return {"value": str(obj)}
 
 
-def _strip_common_explanations(raw_text: str) -> str:
+def _compact_task_context(task: Any) -> Dict[str, Any]:
     """
-    Minimal cleanup when the model adds prose around code.
+    Extract only the generator-relevant task fields.
+    Keep it concise to reduce prompt noise.
+    """
+    data = _as_dict(task)
 
-    Strategy:
-    - prefer fenced block if present
-    - otherwise drop a few common leading explanation lines
-    - keep the rest untouched to avoid over-cleaning
+    return {
+        "task_id": data.get("task_id"),
+        "lang": data.get("lang"),
+        "target_file": data.get("target_file"),
+        "target_function": data.get("target_function"),
+        "signature": data.get("signature"),
+        "docstring": data.get("docstring"),
+        "instruction": data.get("instruction"),
+        "prompt": data.get("prompt"),
+        "file_path": data.get("file_path"),
+        "function_name": data.get("function_name"),
+        "class_name": data.get("class_name"),
+        "code_context": data.get("code_context"),
+        "context_blocks": data.get("context_blocks"),
+    }
+
+
+def _extract_target_file(task: Any) -> Optional[str]:
+    data = _as_dict(task)
+    for key in ("target_file", "file_path"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _extract_target_function(task: Any) -> Optional[str]:
+    data = _as_dict(task)
+    for key in ("target_function", "function_name", "entry_function", "name"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _strip_code_fences(text: str) -> str:
     """
-    text = _safe_text(raw_text).strip()
-    if not text:
+    Remove markdown code fences if the model still outputs them.
+    """
+    text = text.strip()
+
+    fenced = re.match(r"^\s*```[a-zA-Z0-9_+-]*\s*\n(.*?)\n```\s*$", text, flags=re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
+
+    text = re.sub(r"^\s*```[a-zA-Z0-9_+-]*\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
+    return text.strip()
+
+
+def _remove_obvious_non_code_prefix(text: str) -> str:
+    """
+    Best-effort cleanup for common model violations like:
+    - 'Here is the code:'
+    - 'Sure, here's the implementation'
+    Keep logic conservative to avoid corrupting real code.
+    """
+    lines = text.strip().splitlines()
+    if not lines:
         return ""
 
-    fenced = _extract_fenced_code(text)
-    if fenced is not None:
-        return fenced.strip()
-
-    lines = text.splitlines()
-
-    prefixes = (
-        "here is",
-        "here's",
-        "below is",
-        "the code",
-        "updated code",
-        "revised code",
-        "solution:",
-        "explanation:",
+    bad_prefix_patterns = (
+        r"^\s*here(?:'s| is)\b",
+        r"^\s*sure\b",
+        r"^\s*the implementation\b",
+        r"^\s*implementation:\s*$",
+        r"^\s*code:\s*$",
+        r"^\s*generated code:\s*$",
     )
 
-    cleaned_lines = []
-    skipping_prefix = True
+    while lines:
+        first = lines[0].strip().lower()
+        if any(re.match(p, first, flags=re.IGNORECASE) for p in bad_prefix_patterns):
+            lines.pop(0)
+            continue
+        break
 
-    for line in lines:
-        stripped = line.strip()
-        lowered = stripped.lower()
-
-        if skipping_prefix and stripped:
-            if any(lowered.startswith(p) for p in prefixes):
-                continue
-            skipping_prefix = False
-
-        cleaned_lines.append(line)
-
-    return "\n".join(cleaned_lines).strip()
+    return "\n".join(lines).strip()
 
 
-def _validate_output_format(
+def _sanitize_code_output(text: str) -> str:
+    """
+    Final code-only cleanup.
+    """
+    text = _strip_code_fences(text)
+    text = _remove_obvious_non_code_prefix(text)
+    return text.strip()
+
+
+# ============================================================
+# prompt builder
+# ============================================================
+
+def build_generator_system_prompt() -> str:
+    """
+    Strict system instruction:
+    - code only
+    - no explanations
+    - no markdown
+    """
+    return (
+        "You are a code generation agent.\n"
+        "Your only job is to output the final code for the requested target.\n"
+        "Do not explain anything.\n"
+        "Do not add comments outside the code unless they are part of the code itself.\n"
+        "Do not output markdown fences.\n"
+        "Do not output analysis.\n"
+        "Do not output bullet points.\n"
+        "Do not output any text before or after the code.\n"
+        "Output code only."
+    )
+
+
+def build_generator_user_prompt(
     *,
-    raw_text: str,
-    normalized_code: str,
-    task: TaskObject,
-    fmt: Optional[OutputFormatSpec],
-) -> FormatValidationResult:
-    fmt = fmt or OutputFormatSpec()
-    issues = []
+    task: Any,
+    beacon_tree: Any,
+    signature_hints: Any,
+    constraint_summary: Any,
+) -> str:
+    """
+    Build the strict code-generation prompt.
+    """
+    task_context = _compact_task_context(task)
+    target_file = _extract_target_file(task)
+    target_function = _extract_target_function(task)
 
-    raw = _safe_text(raw_text)
-    code = _safe_text(normalized_code)
+    parts = [
+        "Generate the target code using the structured inputs below.",
+        "",
+        "STRICT OUTPUT RULES:",
+        "1. Output code only.",
+        "2. Do not output markdown fences.",
+        "3. Do not output explanations, notes, or prose.",
+        "4. Do not describe what you changed.",
+        "5. The output must be directly usable as code.",
+        "6. Follow beacon_tree, signature_hints, and constraint_summary strictly.",
+        "",
+        "TARGET:",
+        _stable_json(
+            {
+                "target_file": target_file,
+                "target_function": target_function,
+            }
+        ),
+        "",
+        "TASK_CONTEXT:",
+        _stable_json(task_context),
+        "",
+        "BEACON_TREE:",
+        _stable_json(_as_dict(beacon_tree)),
+        "",
+        "SIGNATURE_HINTS:",
+        _stable_json(_as_dict(signature_hints)),
+        "",
+        "CONSTRAINT_SUMMARY:",
+        _stable_json(_as_dict(constraint_summary)),
+        "",
+        "FINAL REMINDER:",
+        "Return code only. No markdown. No explanation. No surrounding text.",
+    ]
 
-    if not code.strip():
-        issues.append("empty_code")
-
-    if not fmt.fenced_code_block and "```" in raw:
-        issues.append("markdown_fence_detected")
-
-    if fmt.code_only:
-        lowered = raw.lower()
-        noisy_prefixes = (
-            "here is",
-            "here's",
-            "below is",
-            "the updated code",
-            "the revised code",
-            "explanation:",
-        )
-        if any(lowered.strip().startswith(p) for p in noisy_prefixes):
-            issues.append("leading_explanation_detected")
-
-    if fmt.require_language_match:
-        lang = _guess_language(task)
-        if lang == "python":
-            # very light heuristic only
-            if "class " not in code and "def " not in code and "=" not in code and "return" not in code:
-                issues.append("language_match_weak")
-
-    return FormatValidationResult(
-        ok=len(issues) == 0,
-        normalized_code=code,
-        issues=tuple(issues),
-        meta={
-            "validator": "generator.format",
-            "raw_len": len(raw),
-            "code_len": len(code),
-            "task_lang": task.lang,
-        },
-    )
+    return "\n".join(parts).strip()
 
 
-def _build_generation_payload(
-    *,
-    raw_text: str,
-    code: str,
-    task: TaskObject,
-    fmt_check: FormatValidationResult,
-) -> GenerationPayload:
-    primary = CodeBlock(
-        language=_guess_language(task),
-        content=code,
-        kind="replacement_impl",
-        filename=_default_filename(task),
-        meta={
-            "target_file": task.target.get("file"),
-            "target_qualname": task.target.get("qualname"),
-        },
-    )
-    return GenerationPayload(
-        primary=primary,
-        auxiliary=(),
-        format_ok=fmt_check.ok,
-        raw_text=_safe_text(raw_text),
-        meta={
-            "task_id": task.id,
-            "target_file": task.target.get("file"),
-            "target_qualname": task.target.get("qualname"),
-        },
-    )
+# ============================================================
+# result objects
+# ============================================================
+
+@dataclass
+class GeneratorInput:
+    task: Any
+    beacon_tree: Any
+    signature_hints: Any
+    constraint_summary: Any
 
 
 @dataclass
-class CodeGenerator:
+class GeneratorResult:
+    generated_code: str
+    prompt_snapshot: str
+    raw_response: Dict[str, Any]
+    model_name: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ============================================================
+# agent
+# ============================================================
+
+class CodeGeneratorAgent:
     """
-    Minimal Beacon-constrained generator.
+    Strict code-only generator agent.
 
     Responsibilities:
-    - build generation/revision prompts
-    - call LLM
-    - normalize model output into GenerationPayload
-    - run lightweight format validation
-
-    Non-responsibilities:
-    - no reasoning rebuild
-    - no scoring
-    - no execution
-    - no verifier invocation
+    - Build generator prompt from structured inputs
+    - Call LLM client once
+    - Sanitize output into code-only form
+    - Return artifacts for downstream workflow
     """
-    llm: LLMClient
-    print_io: bool = False
 
-    def _print(self, message: str) -> None:
-        if self.print_io:
-            print(f"[CodeGenerator] {message}")
+    def __init__(self, llm_client: LLMClient) -> None:
+        self.llm_client = llm_client
 
-    def _normalize_generation(
+    def run(
         self,
         *,
-        raw_text: str,
-        task: TaskObject,
-        output_format: Optional[OutputFormatSpec],
-    ) -> Tuple[GenerationPayload, FormatValidationResult]:
-        cleaned = _strip_common_explanations(raw_text)
-        fmt_check = _validate_output_format(
-            raw_text=raw_text,
-            normalized_code=cleaned,
+        task: Any,
+        beacon_tree: Any,
+        signature_hints: Any,
+        constraint_summary: Any,
+    ) -> GeneratorResult:
+        """
+        Run code generation once.
+
+        No planning, no scoring, no verification.
+        """
+        system_prompt = build_generator_system_prompt()
+        user_prompt = build_generator_user_prompt(
             task=task,
-            fmt=output_format,
-        )
-        payload = _build_generation_payload(
-            raw_text=raw_text,
-            code=fmt_check.normalized_code,
-            task=task,
-            fmt_check=fmt_check,
-        )
-        return payload, fmt_check
-
-    def generate(
-        self,
-        *,
-        task: TaskObject,
-        ir: BeaconIR,
-        constraints: Constraints,
-        selected_thought: Optional[ThoughtCandidate],
-        output_format: Optional[OutputFormatSpec] = None,
-        extra_instructions: Optional[str] = None,
-    ) -> Tuple[GenerationPayload, FormatValidationResult]:
-        self._print(f"start generate: task={task.id}")
-
-        messages = make_generate_messages(
-            task=task,
-            ir=ir,
-            constraints=constraints,
-            selected_thought=selected_thought,
-            output_format=output_format,
-            extra_instructions=extra_instructions,
+            beacon_tree=beacon_tree,
+            signature_hints=signature_hints,
+            constraint_summary=constraint_summary,
         )
 
-        try:
-            raw_text = self.llm.generate_text(messages=messages)
-            self._print(f"generate response chars={len(raw_text)}")
-        except LLMError as e:
-            self._print(f"generate llm error: {e}")
-            raw_text = ""
-
-        payload, fmt_check = self._normalize_generation(
-            raw_text=raw_text,
-            task=task,
-            output_format=output_format,
+        response = self.llm_client.chat(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
         )
 
-        self._print(
-            f"generate done: format_ok={fmt_check.ok} code_len={len(fmt_check.normalized_code)}"
+        code = _sanitize_code_output(response.text)
+
+        return GeneratorResult(
+            generated_code=code,
+            prompt_snapshot=response.prompt_snapshot,
+            raw_response=response.raw_response,
+            model_name=getattr(response, "model_name", None),
         )
-        return payload, fmt_check
-
-    def revise(
-        self,
-        *,
-        task: TaskObject,
-        ir: BeaconIR,
-        constraints: Constraints,
-        selected_thought: Optional[ThoughtCandidate],
-        previous_code: str,
-        verifier_summary: Optional[object] = None,
-        runtime_summary: Optional[object] = None,
-        beacon_usage_summary: Optional[object] = None,
-        output_format: Optional[OutputFormatSpec] = None,
-        extra_instructions: Optional[str] = None,
-    ) -> Tuple[GenerationPayload, FormatValidationResult]:
-        self._print(f"start revise: task={task.id}")
-
-        messages = make_revise_messages(
-            task=task,
-            ir=ir,
-            constraints=constraints,
-            selected_thought=selected_thought,
-            previous_code=previous_code,
-            verifier_summary=verifier_summary,
-            runtime_summary=runtime_summary,
-            beacon_usage_summary=beacon_usage_summary,
-            output_format=output_format,
-            extra_instructions=extra_instructions,
-        )
-
-        try:
-            raw_text = self.llm.generate_text(messages=messages)
-            self._print(f"revise response chars={len(raw_text)}")
-        except LLMError as e:
-            self._print(f"revise llm error: {e}")
-            raw_text = previous_code or ""
-
-        payload, fmt_check = self._normalize_generation(
-            raw_text=raw_text,
-            task=task,
-            output_format=output_format,
-        )
-
-        self._print(
-            f"revise done: format_ok={fmt_check.ok} code_len={len(fmt_check.normalized_code)}"
-        )
-        return payload, fmt_check
-
-
-def generate_code(
-    *,
-    llm: LLMClient,
-    task: TaskObject,
-    ir: BeaconIR,
-    constraints: Constraints,
-    selected_thought: Optional[ThoughtCandidate],
-    output_format: Optional[OutputFormatSpec] = None,
-    extra_instructions: Optional[str] = None,
-    print_io: bool = False,
-) -> Tuple[GenerationPayload, FormatValidationResult]:
-    """
-    Convenience function for initial generation.
-    """
-    generator = CodeGenerator(llm=llm, print_io=print_io)
-    return generator.generate(
-        task=task,
-        ir=ir,
-        constraints=constraints,
-        selected_thought=selected_thought,
-        output_format=output_format,
-        extra_instructions=extra_instructions,
-    )
-
-
-def revise_code(
-    *,
-    llm: LLMClient,
-    task: TaskObject,
-    ir: BeaconIR,
-    constraints: Constraints,
-    selected_thought: Optional[ThoughtCandidate],
-    previous_code: str,
-    verifier_summary: Optional[object] = None,
-    runtime_summary: Optional[object] = None,
-    beacon_usage_summary: Optional[object] = None,
-    output_format: Optional[OutputFormatSpec] = None,
-    extra_instructions: Optional[str] = None,
-    print_io: bool = False,
-) -> Tuple[GenerationPayload, FormatValidationResult]:
-    """
-    Convenience function for revision generation.
-    """
-    generator = CodeGenerator(llm=llm, print_io=print_io)
-    return generator.revise(
-        task=task,
-        ir=ir,
-        constraints=constraints,
-        selected_thought=selected_thought,
-        previous_code=previous_code,
-        verifier_summary=verifier_summary,
-        runtime_summary=runtime_summary,
-        beacon_usage_summary=beacon_usage_summary,
-        output_format=output_format,
-        extra_instructions=extra_instructions,
-    )

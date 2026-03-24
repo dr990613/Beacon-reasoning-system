@@ -344,11 +344,37 @@ def revise_system_prompt() -> str:
             "runtime evidence, Beacon usage checks, Task, Beacon IR, Constraints, and the selected thought."
         ),
         (
+            "Prioritize fixing issues that are likely to cause runtime errors, incorrect API usage, "
+            "name-resolution failures, constructor or method misuse, or test failures."
+        ),
+        (
+            "When revising, strictly respect the target file context and in-scope symbols. "
+            "Do not assume missing imports, modules, helper functions, or global names exist unless they are provided in context."
+        ),
+        (
+            "Do not introduce fake helper calls, fake global functions, detached intermediate variables, "
+            "or placeholder uses of required symbols or calls."
+        ),
+        (
+            "Every required symbol or call that appears in the code must participate in a valid execution path "
+            "and must be used in a way that is consistent with the file context and the target API."
+        ),
+        (
+            "Do not add dead code or unused variables just to satisfy Beacon usage checks."
+        ),
+        (
+            "Preserve the current approach when possible, and make the smallest changes needed to satisfy "
+            "Beacon constraints and improve execution correctness."
+        ),
+        (
             "Do not redesign the task from scratch unless the evidence shows the current approach is invalid."
+        ),
+        (
+            "Do not make stylistic or unnecessary refactors. Focus only on corrections that materially improve "
+            "correctness, executability, or constraint satisfaction."
         ),
         "Return corrected code only.",
     ])
-
 
 # ============================================================
 # User prompts

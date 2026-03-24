@@ -1,4 +1,0 @@
-{
-  "question_id": "62e60f43d76274f8a4026e28",
-  "answer": "def hydrate_time(nanoseconds, tz):\n    seconds, nsecs = divmod(nanoseconds, 1_000_000_000)\n    minutes, seconds = divmod(seconds, 60)\n    hours, minutes = divmod(minutes, 60)\n    time_components = map(int, [hours, minutes, seconds, nsecs // 1000])\n    time_obj = datetime.time(*time_components)\n    if tz is not None:\n        tz = FixedOffset(tz)\n        time_obj = tz.localize(time_obj)\n    return Time(time_obj)"
-}

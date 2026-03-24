@@ -1,74 +1,118 @@
-# src/beacon_system/adapters/base.py
 # -*- coding: utf-8 -*-
 
 """
-Adapter interfaces (Adapter-first)
+Base adapter contracts.
 
-Hard rules:
-- Pipeline depends ONLY on these interfaces.
-- Benchmark-specific logic must live in adapters/<name>/.
-- No registry here, no env access, no business logic.
+Responsibilities:
+- Define minimal TaskAdapter / RuntimeAdapter interfaces
+- Keep adapter boundary explicit
+- No Beacon logic here
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Protocol, Tuple, runtime_checkable
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..types import ExecResult, ProjectIndex, TaskObject
+from ..types import ProjectIndex, TaskObject
 
 
-@runtime_checkable
-class TaskAdapter(Protocol):
+@dataclass(frozen=True)
+class PatchTarget:
     """
-    TaskAdapter builds the normalized TaskObject + ProjectIndex.
+    Minimal patch target description used by local patch infra.
+    """
+    file_path: str
+    target_name: Optional[str] = None
+    qualname: Optional[str] = None
+    lineno: Optional[int] = None
+    end_lineno: Optional[int] = None
+    language: Optional[str] = None
 
-    Rules:
-    - Absorb unknown benchmark fields into TaskObject.context/meta.
-    - ProjectIndex is built by adapter and treated as read-only downstream.
-    - Do not run reasoning here.
+
+@dataclass(frozen=True)
+class RuntimeResult:
+    """
+    Minimal runtime result contract.
+    """
+    ok: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    command: List[str]
+    cwd: Optional[str] = None
+
+
+class TaskAdapter(ABC):
+    """
+    Minimal input adapter contract.
+
+    Adapter layer should:
+    - read raw task / repo context
+    - build TaskObject
+    - build ProjectIndex
+    - provide enough source/spec context for downstream logic
+
+    Adapter layer should NOT:
+    - perform Beacon reasoning
+    - inject model logic
     """
 
-    def build_task(self) -> Tuple[TaskObject, ProjectIndex]:
+    @abstractmethod
+    def load_task(self, raw_task: Dict[str, Any]) -> TaskObject:
         """
-        Return:
-            (task, project_index)
+        Convert a raw benchmark/task record into TaskObject.
         """
-        ...
+        raise NotImplementedError
 
-    def snapshot(self) -> Dict[str, Any]:
+    @abstractmethod
+    def build_project_index(
+        self,
+        *,
+        task: TaskObject,
+        project_root: str | Path,
+    ) -> ProjectIndex:
         """
-        Return a JSON-serializable snapshot for reproducibility.
+        Build a ProjectIndex for the given task and repo root.
         """
-        ...
+        raise NotImplementedError
+
+    @abstractmethod
+    def load(
+        self,
+        *,
+        raw_task: Dict[str, Any],
+        project_root: str | Path,
+    ) -> Tuple[TaskObject, ProjectIndex]:
+        """
+        Convenience entry:
+            raw_task + repo -> (TaskObject, ProjectIndex)
+        """
+        raise NotImplementedError
 
 
-@runtime_checkable
-class RuntimeAdapter(Protocol):
+class RuntimeAdapter(ABC):
     """
-    RuntimeAdapter runs the task in its benchmark/runtime environment.
+    Minimal execution/runtime adapter contract.
 
-    patch:
-        A JSON-serializable dict describing how to inject generated code into
-        the runtime environment, for example:
-        {
-            "target_file": ...,
-            "target_qualname": ...,
-            "new_code": ...
-        }
+    Runtime layer should:
+    - run commands/tests
+    - return outputs only
 
-    Notes:
-    - Keep this minimal for now.
-    - Concrete adapters may internally convert patch dict into stronger objects.
+    Runtime layer should NOT:
+    - perform reasoning
+    - decide acceptance semantics
     """
 
-    def run(self, task: TaskObject, patch: Dict[str, Any]) -> ExecResult:
-        """
-        Execute patched task in the target runtime and return normalized result.
-        """
-        ...
-
-    def snapshot(self) -> Dict[str, Any]:
-        """
-        Return a JSON-serializable snapshot for reproducibility.
-        """
-        ...
+    @abstractmethod
+    def run(
+        self,
+        *,
+        command: Sequence[str],
+        cwd: str | Path,
+        env: Optional[Dict[str, str]] = None,
+        timeout_sec: Optional[int] = None,
+    ) -> RuntimeResult:
+        raise NotImplementedError

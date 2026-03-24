@@ -1,409 +1,210 @@
-# src/beacon_system/io.py
 # -*- coding: utf-8 -*-
 
 """
-Artifacts I/O (working-memory materialization)
+Artifact IO for Beacon system.
 
-- Deterministic JSON serialization: stable_json(obj)
-- Run folder layout: outputs/runs/<run_id>/
-- Persist pipeline / workflow artifacts for replay and regression debugging
-- Centralize all artifact writes here; other modules should not write ad hoc files
+Design goals:
+- Simple and stable artifact persistence
+- JSON-first for reproducibility
+- No business logic, only filesystem + serialization
+- Schema-tolerant: works with dataclass / dict / plain objects
 """
 
 from __future__ import annotations
 
-import dataclasses
-import hashlib
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
 import json
-import os
-import time
-from typing import Any, Dict, Optional, Sequence
-
-import yaml
-
-from .types import (
-    BeaconIR,
-    BeaconUsageReport,
-    Constraints,
-    ExecResult,
-    FormatValidationResult,
-    GenerationPayload,
-    MemoryReadResult,
-    MemoryWriteResult,
-    RunConfig,
-    TaskObject,
-    ThoughtCandidate,
-    ThoughtScore,
-    VerifierResult,
-)
 
 
-def make_run_id() -> str:
+def ensure_dir(path: Path | str) -> Path:
+    """Ensure directory exists and return Path."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def utc_now_iso() -> str:
+    """Return current UTC time in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def to_jsonable(obj: Any) -> Any:
     """
-    Run ID: UTC-ish timestamp + short hash suffix.
+    Convert common Python objects into JSON-serializable structures.
 
-    Deterministic is NOT required here; uniqueness is enough.
+    Supports:
+    - None / primitive types
+    - dict / list / tuple / set
+    - dataclass instances
+    - pathlib.Path
+    - objects with __dict__
+    - fallback to str(obj)
     """
-    ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    suffix = hashlib.sha1(f"{time.time_ns()}".encode("utf-8")).hexdigest()[:8]
-    return f"{ts}-{suffix}"
-
-
-def _to_primitive(obj: Any) -> Any:
-    """
-    Convert dataclasses / tuples / sets into JSON-serializable primitives.
-    Keep it minimal and deterministic.
-    """
-    if obj is None:
-        return None
-
-    if dataclasses.is_dataclass(obj):
-        return {k: _to_primitive(v) for k, v in dataclasses.asdict(obj).items()}
-
-    if isinstance(obj, dict):
-        return {str(k): _to_primitive(v) for k, v in obj.items()}
-
-    if isinstance(obj, (list, tuple)):
-        return [_to_primitive(x) for x in obj]
-
-    if isinstance(obj, set):
-        return sorted(
-            [_to_primitive(x) for x in obj],
-            key=lambda x: json.dumps(x, ensure_ascii=False, sort_keys=True),
-        )
-
-    if isinstance(obj, (str, int, float, bool)):
+    if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
 
-    return {"repr": repr(obj)}
+    if isinstance(obj, Path):
+        return str(obj)
+
+    if is_dataclass(obj):
+        return to_jsonable(asdict(obj))
+
+    if isinstance(obj, dict):
+        return {str(k): to_jsonable(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple, set)):
+        return [to_jsonable(x) for x in obj]
+
+    if hasattr(obj, "__dict__"):
+        return to_jsonable(vars(obj))
+
+    return str(obj)
 
 
-def stable_json(obj: Any) -> str:
+def dump_json(path: Path | str, data: Any, *, indent: int = 2) -> Path:
+    """Write JSON data to path."""
+    p = Path(path)
+    ensure_dir(p.parent)
+    with p.open("w", encoding="utf-8") as f:
+        json.dump(to_jsonable(data), f, ensure_ascii=False, indent=indent, sort_keys=True)
+    return p
+
+
+def dump_text(path: Path | str, text: str) -> Path:
+    """Write text to path."""
+    p = Path(path)
+    ensure_dir(p.parent)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def load_json(path: Path | str, default: Optional[Any] = None) -> Any:
+    """Load JSON file, return default if path not exists."""
+    p = Path(path)
+    if not p.exists():
+        return default
+    with p.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def make_task_dir(output_dir: Path | str, task_id: str) -> Path:
     """
-    Deterministic JSON string:
-    - ensure_ascii=False for readability
-    - sort_keys=True for stable ordering
-    - separators for stable whitespace
+    Create stable task artifact directory:
+    <output_dir>/<task_id>/
     """
-    prim = _to_primitive(obj)
-    return json.dumps(prim, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    root = ensure_dir(output_dir)
+    return ensure_dir(root / str(task_id))
 
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
-
-def _write_text(path: str, text: str) -> None:
-    parent = os.path.dirname(path)
-    if parent:
-        _ensure_dir(parent)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-
-def _write_json(path: str, obj: Any) -> None:
-    _write_text(path, stable_json(obj) + "\n")
-
-
-def _write_yaml(path: str, obj: Any) -> None:
-    prim = _to_primitive(obj)
-    parent = os.path.dirname(path)
-    if parent:
-        _ensure_dir(parent)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(prim, f, sort_keys=True, allow_unicode=True)
-
-
-def ensure_run_dir(outputs_dir: str, run_id: str) -> str:
+def save_logic_artifacts(
+    output_dir: Path | str,
+    task_id: str,
+    logic_result: Any,
+) -> Dict[str, str]:
     """
-    Create and return outputs/runs/<run_id>-style directory.
+    Save logic-related artifacts.
+
+    Outputs:
+    - logic_result.json
+    - raw_ir.json (if present)
+    - beacon_tree.json (if present)
+    - signature_hints.json (if present)
+    - constraint_summary.json (if present)
     """
-    run_dir = os.path.join(outputs_dir, run_id)
-    _ensure_dir(run_dir)
-    return run_dir
+    task_dir = make_task_dir(output_dir, task_id)
+    logic_dir = ensure_dir(task_dir / "logic")
+
+    result_dict = to_jsonable(logic_result)
+    paths: Dict[str, str] = {}
+
+    paths["logic_result"] = str(dump_json(logic_dir / "logic_result.json", result_dict))
+
+    if isinstance(result_dict, dict):
+        for key in ("raw_ir", "beacon_tree", "signature_hints", "constraint_summary", "debug"):
+            if key in result_dict:
+                paths[key] = str(dump_json(logic_dir / f"{key}.json", result_dict[key]))
+
+    return paths
 
 
-def write_json_artifact(run_dir: str, filename: str, obj: Any) -> str:
-    """
-    Generic JSON artifact writer.
-    """
-    path = os.path.join(run_dir, filename)
-    _write_json(path, obj)
-    return path
-
-
-def write_text_artifact(run_dir: str, filename: str, text: str) -> str:
-    """
-    Generic text artifact writer.
-    """
-    path = os.path.join(run_dir, filename)
-    _write_text(path, text)
-    return path
-
-
-def write_static_artifacts(
-    run_dir: str,
+def save_generation_artifacts(
+    output_dir: Path | str,
+    task_id: str,
+    generation_result: Any,
     *,
-    config: RunConfig,
-    adapter_snapshot: Dict[str, Any],
-    task: TaskObject,
-    ir: BeaconIR,
-    constraints: Constraints,
-) -> None:
+    round_name: str = "round_1",
+) -> Dict[str, str]:
     """
-    Persist run-level static artifacts.
+    Save generation artifacts.
 
-    These files are usually written once per run, but overwrite is harmless.
+    Outputs:
+    - generation/<round_name>/generation_result.json
+    - generation/<round_name>/generated_code.py|txt
+    - generation/<round_name>/prompt_snapshot.txt
     """
-    _ensure_dir(run_dir)
-    _write_yaml(os.path.join(run_dir, "config.yaml"), config)
-    _write_json(os.path.join(run_dir, "adapter_snapshot.json"), adapter_snapshot)
-    _write_json(os.path.join(run_dir, "task.json"), task)
-    _write_json(os.path.join(run_dir, "ir.json"), ir)
-    _write_json(os.path.join(run_dir, "constraints.json"), constraints)
+    task_dir = make_task_dir(output_dir, task_id)
+    gen_dir = ensure_dir(task_dir / "generation" / round_name)
+
+    result_dict = to_jsonable(generation_result)
+    paths: Dict[str, str] = {}
+    paths["generation_result"] = str(dump_json(gen_dir / "generation_result.json", result_dict))
+
+    if isinstance(result_dict, dict):
+        code = result_dict.get("generated_code")
+        prompt = result_dict.get("prompt_snapshot")
+        raw_response = result_dict.get("raw_response")
+
+        if isinstance(code, str):
+            paths["generated_code"] = str(dump_text(gen_dir / "generated_code.py", code))
+        if isinstance(prompt, str):
+            paths["prompt_snapshot"] = str(dump_text(gen_dir / "prompt_snapshot.txt", prompt))
+        if raw_response is not None:
+            paths["raw_response"] = str(dump_json(gen_dir / "raw_response.json", raw_response))
+
+    return paths
 
 
-def write_thoughts(
-    run_dir: str,
+def save_verification_artifacts(
+    output_dir: Path | str,
+    task_id: str,
+    verification_result: Any,
     *,
-    thoughts: Sequence[ThoughtCandidate],
-    round_id: int,
-) -> None:
+    round_name: str = "round_1",
+) -> Dict[str, str]:
     """
-    Persist planning thoughts for one round.
+    Save verification artifacts.
+
+    Outputs:
+    - verification/<round_name>/verification_result.json
     """
-    _write_json(os.path.join(run_dir, f"thoughts_round{round_id}.json"), list(thoughts))
+    task_dir = make_task_dir(output_dir, task_id)
+    ver_dir = ensure_dir(task_dir / "verification" / round_name)
+
+    result_dict = to_jsonable(verification_result)
+    paths: Dict[str, str] = {}
+    paths["verification_result"] = str(dump_json(ver_dir / "verification_result.json", result_dict))
+    return paths
 
 
-def write_scores(
-    run_dir: str,
-    *,
-    scores: Sequence[ThoughtScore],
-    round_id: int,
-) -> None:
+def save_run_trace(
+    output_dir: Path | str,
+    task_id: str,
+    run_trace: Any,
+) -> str:
     """
-    Persist thought scores for one round.
+    Save full run trace to:
+    <output_dir>/<task_id>/run_trace.json
     """
-    _write_json(os.path.join(run_dir, f"scores_round{round_id}.json"), list(scores))
+    task_dir = make_task_dir(output_dir, task_id)
+    trace_dict = to_jsonable(run_trace)
 
+    if isinstance(trace_dict, dict) and "metadata" not in trace_dict:
+        trace_dict["metadata"] = {"saved_at_utc": utc_now_iso()}
+    elif isinstance(trace_dict, dict):
+        trace_dict.setdefault("metadata", {})
+        trace_dict["metadata"].setdefault("saved_at_utc", utc_now_iso())
 
-def write_generation(
-    run_dir: str,
-    *,
-    generation: Optional[GenerationPayload],
-    round_id: int,
-    default_ext: str = ".py",
-) -> None:
-    """
-    Persist generation payload and primary code block.
-
-    Files:
-    - generation_round{n}.json
-    - code_round{n}{ext}
-    """
-    if generation is None:
-        return
-
-    _write_json(os.path.join(run_dir, f"generation_round{round_id}.json"), generation)
-
-    primary = generation.primary
-    code = (primary.content or "").rstrip() + "\n"
-    ext = default_ext
-    if primary.filename:
-        _, maybe_ext = os.path.splitext(primary.filename)
-        if maybe_ext:
-            ext = maybe_ext
-
-    _write_text(os.path.join(run_dir, f"code_round{round_id}{ext}"), code)
-
-    if generation.raw_text:
-        _write_text(
-            os.path.join(run_dir, f"raw_generation_round{round_id}.txt"),
-            generation.raw_text.rstrip() + "\n",
-        )
-
-
-def write_format_check(
-    run_dir: str,
-    *,
-    format_check: Optional[FormatValidationResult],
-    round_id: int,
-    default_ext: str = ".py",
-) -> None:
-    """
-    Persist format validation result.
-
-    If normalized_code exists, also write it as a text artifact for inspection.
-    """
-    if format_check is None:
-        return
-
-    _write_json(os.path.join(run_dir, f"format_check_round{round_id}.json"), format_check)
-
-    if format_check.normalized_code:
-        _write_text(
-            os.path.join(run_dir, f"normalized_code_round{round_id}{default_ext}"),
-            format_check.normalized_code.rstrip() + "\n",
-        )
-
-
-def write_verifier(
-    run_dir: str,
-    *,
-    report: Optional[VerifierResult],
-    round_id: int,
-) -> None:
-    """
-    Persist verifier result for one round.
-    """
-    if report is None:
-        return
-    _write_json(os.path.join(run_dir, f"verifier_round{round_id}.json"), report)
-
-
-def write_beacon_usage(
-    run_dir: str,
-    *,
-    usage: Optional[BeaconUsageReport],
-    round_id: int,
-) -> None:
-    """
-    Persist Beacon usage check result for one round.
-    """
-    if usage is None:
-        return
-    _write_json(os.path.join(run_dir, f"beacon_usage_round{round_id}.json"), usage)
-
-
-def write_exec_result(
-    run_dir: str,
-    *,
-    exec_result: Optional[ExecResult],
-    round_id: int,
-) -> None:
-    """
-    Persist execution result for one round.
-
-    Files:
-    - exec_round{n}.json
-    - exec_round{n}.trace.txt
-    - metrics_round{n}.json
-    """
-    if exec_result is None:
-        return
-
-    _write_json(os.path.join(run_dir, f"exec_round{round_id}.json"), exec_result)
-
-    if exec_result.trace:
-        _write_text(
-            os.path.join(run_dir, f"exec_round{round_id}.trace.txt"),
-            exec_result.trace.rstrip() + "\n",
-        )
-
-    if exec_result.metrics:
-        _write_json(os.path.join(run_dir, f"metrics_round{round_id}.json"), exec_result.metrics)
-
-
-def write_memory_artifacts(
-    run_dir: str,
-    *,
-    memory_read: Optional[MemoryReadResult] = None,
-    memory_write: Optional[MemoryWriteResult] = None,
-) -> None:
-    """
-    Persist memory read/write artifacts.
-    """
-    if memory_read is not None:
-        _write_json(os.path.join(run_dir, "memory_read.json"), memory_read)
-
-    if memory_write is not None:
-        _write_json(os.path.join(run_dir, "memory_write.json"), memory_write)
-
-
-def write_artifacts(
-    run_dir: str,
-    *,
-    config: RunConfig,
-    adapter_snapshot: Dict[str, Any],
-    task: TaskObject,
-    ir: BeaconIR,
-    constraints: Constraints,
-    round_id: int,
-    generation: Optional[GenerationPayload] = None,
-    format_check: Optional[FormatValidationResult] = None,
-    report: Optional[VerifierResult] = None,
-    beacon_usage: Optional[BeaconUsageReport] = None,
-    exec_result: Optional[ExecResult] = None,
-    thoughts: Optional[Sequence[ThoughtCandidate]] = None,
-    scores: Optional[Sequence[ThoughtScore]] = None,
-    memory_read: Optional[MemoryReadResult] = None,
-    memory_write: Optional[MemoryWriteResult] = None,
-    default_code_ext: str = ".py",
-) -> None:
-    """
-    Unified artifact writer for one workflow round.
-
-    Static files:
-    - config.yaml
-    - adapter_snapshot.json
-    - task.json
-    - ir.json
-    - constraints.json
-
-    Optional per-round files:
-    - thoughts_round{n}.json
-    - scores_round{n}.json
-    - generation_round{n}.json
-    - code_round{n}.py
-    - raw_generation_round{n}.txt
-    - format_check_round{n}.json
-    - normalized_code_round{n}.py
-    - verifier_round{n}.json
-    - beacon_usage_round{n}.json
-    - exec_round{n}.json
-    - exec_round{n}.trace.txt
-    - metrics_round{n}.json
-
-    Optional run-level memory files:
-    - memory_read.json
-    - memory_write.json
-    """
-    _ensure_dir(run_dir)
-
-    write_static_artifacts(
-        run_dir,
-        config=config,
-        adapter_snapshot=adapter_snapshot,
-        task=task,
-        ir=ir,
-        constraints=constraints,
-    )
-
-    if thoughts is not None:
-        write_thoughts(run_dir, thoughts=thoughts, round_id=round_id)
-
-    if scores is not None:
-        write_scores(run_dir, scores=scores, round_id=round_id)
-
-    write_generation(
-        run_dir,
-        generation=generation,
-        round_id=round_id,
-        default_ext=default_code_ext,
-    )
-
-    write_format_check(
-        run_dir,
-        format_check=format_check,
-        round_id=round_id,
-        default_ext=default_code_ext,
-    )
-
-    write_verifier(run_dir, report=report, round_id=round_id)
-    write_beacon_usage(run_dir, usage=beacon_usage, round_id=round_id)
-    write_exec_result(run_dir, exec_result=exec_result, round_id=round_id)
-    write_memory_artifacts(
-        run_dir,
-        memory_read=memory_read,
-        memory_write=memory_write,
-    )
+    return str(dump_json(task_dir / "run_trace.json", trace_dict))

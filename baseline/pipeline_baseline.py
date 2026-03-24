@@ -50,3 +50,7 @@ class BaselinePipeline:
         """
         result = self.run_task(raw_task)
         return result.to_dict()
+
+    def run_codegen(self, task: CodeEvalTask) -> GenerationResult:
+        print(f"[DEBUG] task_id={task.task_id} lang={task.lang}")
+        return self.generator.generate_result(task)

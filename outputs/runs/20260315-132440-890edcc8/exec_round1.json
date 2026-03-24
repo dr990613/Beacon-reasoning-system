@@ -1,7 +1,0 @@
-{
-  "blocked_by": "syntax_gate",
-  "details": [],
-  "reason": "Generated code did not pass local syntax gate.",
-  "round": 1,
-  "status": "blocked"
-}

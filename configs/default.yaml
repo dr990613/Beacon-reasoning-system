@@ -23,14 +23,15 @@ reader:
 
 model:
   provider: openai_compat
-  base_url: ${env:MODEL_BASE_URL,https://openrouter.ai/api/v1}
-  api_key: ${env:MODEL_API_KEY}
-  model_name: ${env:MODEL_NAME,qwen/qwen3-32b}
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: ""
+  model_name: "qwen/qwen3-coder-next"
+
   timeout_s: 120
   params:
     temperature: 0.2
     top_p: 0.95
-    max_tokens: 2048
+    max_tokens: 4096
 
 adapter:
   name: smoke

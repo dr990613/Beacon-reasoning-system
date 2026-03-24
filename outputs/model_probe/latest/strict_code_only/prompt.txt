@@ -1,7 +1,0 @@
-Write Python code only.
-No prose. No markdown. No notes. No alternatives.
-Your response must begin with: def solve(
-
-Implement:
-def solve(nums: list[int]) -> int:
-    pass

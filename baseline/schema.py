@@ -1,4 +1,4 @@
-# baseline_codegen/types.py
+# baseline_codegen/schema.py
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 import re
 
 
+
+
 @dataclass
 class CodeEvalTask:
     """
@@ -15,6 +17,7 @@ class CodeEvalTask:
     """
     task_id: str
     prompt: str
+    lang: str
     signature: Optional[str] = None
     docstring: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -23,7 +26,6 @@ class CodeEvalTask:
     def from_raw(cls, raw: Dict[str, Any]) -> "CodeEvalTask":
         """
         Build a task object from one raw record in the benchmark json.
-        This method is schema-tolerant and tries several common field names.
         """
         task_id = str(
             raw.get("_id")
@@ -40,7 +42,10 @@ class CodeEvalTask:
             raw.get("docstring") or raw.get("comment")
         )
 
+        lang = detect_task_lang(raw)
+
         prompt = build_task_prompt(
+            lang=lang,
             name=_clean_optional_text(raw.get("name")),
             human_label=_clean_optional_text(raw.get("human_label")),
             signature=signature,
@@ -55,17 +60,36 @@ class CodeEvalTask:
             "project": raw.get("project"),
             "package": raw.get("package"),
             "level": raw.get("level"),
+            "lang": lang,
             "raw": raw,
         }
 
         return cls(
             task_id=task_id,
             prompt=prompt,
+            lang=lang,
             signature=signature,
             docstring=docstring,
             metadata=metadata,
         )
 
+def detect_task_lang(raw: Dict[str, Any]) -> str:
+    raw_lang = str(raw.get("lang") or raw.get("language") or "").strip().lower()
+    if raw_lang in {"python", "py"}:
+        return "python"
+    if raw_lang in {"java"}:
+        return "java"
+
+    file_path = str(raw.get("file_path") or "").strip().lower()
+    if file_path.endswith(".java"):
+        return "java"
+    if file_path.endswith(".py"):
+        return "python"
+
+    if raw.get("class_name") is not None:
+        return "java"
+
+    return "python"
 
 @dataclass
 class ModelRequest:
@@ -195,6 +219,7 @@ class CodeOnlyPolicy:
 
 
 def build_task_prompt(
+    lang: str,
     name: Optional[str],
     human_label: Optional[str],
     signature: Optional[str],
@@ -205,8 +230,10 @@ def build_task_prompt(
     """
     Build a stable prompt for baseline code generation.
     """
+    lang_name = "Java" if lang == "java" else "Python"
+
     parts: List[str] = []
-    parts.append("Write Python code for the following task.")
+    parts.append(f"Write {lang_name} code for the following task.")
     parts.append("Return only code. Do not include explanations.")
 
     if name:

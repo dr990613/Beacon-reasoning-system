@@ -1,7 +1,0 @@
-Traceback (most recent call last):
-  File "E:\Beacon-reasoning-system\src\run_codereval_diagnose.py", line 860, in main
-    record = load_record_by_task_id(Path(args.json_path), args.task_id)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\Beacon-reasoning-system\src\run_codereval_diagnose.py", line 292, in load_record_by_task_id
-    raise ValueError(f"task_id not found: {task_id}")
-ValueError: task_id not found: 62e60f43d76274f8a4026e28

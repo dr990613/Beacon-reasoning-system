@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config_baseline import load_config
 from generator_baseline import BaselineGenerator
@@ -21,7 +21,19 @@ def parse_args() -> argparse.Namespace:
         "--input-json",
         type=str,
         default=None,
-        help="Path to benchmark json file. Overrides config if provided.",
+        help="Single benchmark json file. Legacy mode. Overrides config if provided.",
+    )
+    parser.add_argument(
+        "--python-json",
+        type=str,
+        default=None,
+        help="Path to Python benchmark json file.",
+    )
+    parser.add_argument(
+        "--java-json",
+        type=str,
+        default=None,
+        help="Path to Java benchmark json file.",
     )
     parser.add_argument(
         "--output-json",
@@ -33,19 +45,55 @@ def parse_args() -> argparse.Namespace:
         "--task-id",
         type=str,
         default=None,
-        help="Run only one task by id (_id/question_id/task_id/id).",
+        help="Run only one task by id (_id/question_id/task_id/id). Only used in single-file mode.",
+    )
+    parser.add_argument(
+        "--python-task-id",
+        type=str,
+        default=None,
+        help="Run only one Python task by id.",
+    )
+    parser.add_argument(
+        "--java-task-id",
+        type=str,
+        default=None,
+        help="Run only one Java task by id.",
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Run only the first N tasks after filtering.",
+        help="Legacy single-file mode: run only the first N tasks after filtering.",
+    )
+    parser.add_argument(
+        "--take-n-each",
+        type=int,
+        default=1,
+        help="How many tasks to take from Python and Java each. Default: 1.",
     )
     parser.add_argument(
         "--start-index",
         type=int,
         default=None,
-        help="Start index for batch execution.",
+        help="Legacy single-file mode start index.",
+    )
+    parser.add_argument(
+        "--python-start-index",
+        type=int,
+        default=0,
+        help="Python start index in dual-language mode.",
+    )
+    parser.add_argument(
+        "--java-start-index",
+        type=int,
+        default=0,
+        help="Java start index in dual-language mode.",
+    )
+    parser.add_argument(
+        "--num-passes",
+        type=int,
+        default=None,
+        help="How many times to run each task. Overrides config if provided.",
     )
     parser.add_argument(
         "--overwrite",
@@ -71,13 +119,11 @@ def load_tasks(json_path: Path) -> List[Dict[str, Any]]:
         return data
 
     if isinstance(data, dict):
-        # 先处理常见字段
         for key in ("data", "tasks", "records", "items", "RECORDS"):
             value = data.get(key)
             if isinstance(value, list):
                 return value
 
-        # 再做一层宽松匹配：只要某个 value 是 list[dict]，就用它
         for key, value in data.items():
             if isinstance(value, list):
                 if not value:
@@ -124,6 +170,15 @@ def filter_tasks(
     return sliced
 
 
+def detect_lang_from_path(path: Path) -> str:
+    name = path.name.lower()
+    if "java" in name:
+        return "java"
+    if "python" in name or "py" in name:
+        return "python"
+    return "unknown"
+
+
 def load_existing_results(output_path: Path) -> List[Dict[str, Any]]:
     if not output_path.exists():
         return []
@@ -136,44 +191,42 @@ def load_existing_results(output_path: Path) -> List[Dict[str, Any]]:
     return data
 
 
+def _result_merge_key(item: Dict[str, Any]) -> str:
+    item_id = str(item.get("_id", "")).strip()
+    lang = str(item.get("lang", "")).strip().lower()
+    if not item_id:
+        raise ValueError("Result item is missing _id.")
+    return f"{lang}::{item_id}" if lang else item_id
+
+
 def merge_results(
     existing_results: List[Dict[str, Any]],
     new_results: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """
-    以 _id 为键更新结果。
-    新结果覆盖旧结果，未涉及的旧结果保留。
-    """
     merged: Dict[str, Dict[str, Any]] = {}
 
     for item in existing_results:
-        item_id = str(item.get("_id", "")).strip()
-        if item_id:
-            merged[item_id] = item
+        merged[_result_merge_key(item)] = item
 
     for item in new_results:
-        item_id = str(item.get("_id", "")).strip()
-        if not item_id:
-            raise ValueError("Generated result is missing _id.")
-        merged[item_id] = item
+        merged[_result_merge_key(item)] = item
 
-    # 保持稳定顺序：先按 existing/new 的出现顺序，再补剩余
-    ordered_ids: List[str] = []
+    ordered_keys: List[str] = []
     seen = set()
 
     for source in (existing_results, new_results):
         for item in source:
-            item_id = str(item.get("_id", "")).strip()
-            if item_id and item_id not in seen:
-                ordered_ids.append(item_id)
-                seen.add(item_id)
+            key = _result_merge_key(item)
+            if key not in seen:
+                ordered_keys.append(key)
+                seen.add(key)
 
-    for item_id in merged.keys():
-        if item_id not in seen:
-            ordered_ids.append(item_id)
-            seen.add(item_id)
+    for key in merged.keys():
+        if key not in seen:
+            ordered_keys.append(key)
+            seen.add(key)
 
-    return [merged[item_id] for item_id in ordered_ids]
+    return [merged[key] for key in ordered_keys]
 
 
 def save_results(
@@ -189,49 +242,208 @@ def save_results(
             json.dump(results, f, ensure_ascii=False)
 
 
+def extract_answer_text(result: Dict[str, Any]) -> str:
+    """
+    Extract one code string from baseline pipeline output.
+    Priority:
+    1. benchmark-style generate_results[0]
+    2. common flat string fields
+    3. nested fallback
+    """
+    # 1) your actual benchmark format
+    generate_results = result.get("generate_results")
+    if isinstance(generate_results, list) and generate_results:
+        first = generate_results[0]
+        if isinstance(first, str):
+            return first
+
+    # 2) common flat fields
+    for key in (
+        "answer",
+        "code",
+        "prediction",
+        "generated_code",
+        "output",
+        "response",
+        "final_code",
+    ):
+        value = result.get(key)
+        if isinstance(value, str):
+            return value
+
+    # 3) optional nested fallback
+    for container_key in ("result", "data", "payload"):
+        container = result.get(container_key)
+        if isinstance(container, dict):
+            nested_generate_results = container.get("generate_results")
+            if isinstance(nested_generate_results, list) and nested_generate_results:
+                first = nested_generate_results[0]
+                if isinstance(first, str):
+                    return first
+
+    return ""
+
+
+def run_task_passes(
+    pipeline: BaselinePipeline,
+    raw_task: Dict[str, Any],
+    lang: str,
+    num_passes: int,
+) -> Dict[str, Any]:
+    task_id = get_task_id(raw_task)
+    if not task_id:
+        raise ValueError("Task is missing id.")
+
+    final_item: Dict[str, Any] = {
+        "_id": task_id,
+        "lang": lang,
+    }
+
+    for pass_idx in range(1, num_passes + 1):
+        print(f"    - pass {pass_idx}/{num_passes}")
+        result = pipeline.run_task_to_dict(raw_task)
+        answer_text = extract_answer_text(result)
+        final_item[f"answer_{pass_idx}"] = answer_text
+
+    return final_item
+
+
+def build_dual_language_task_list(
+    python_json: Path,
+    java_json: Path,
+    python_task_id: Optional[str],
+    java_task_id: Optional[str],
+    python_start_index: int,
+    java_start_index: int,
+    take_n_each: int,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    python_tasks_all = load_tasks(python_json)
+    java_tasks_all = load_tasks(java_json)
+
+    python_tasks = filter_tasks(
+        tasks=python_tasks_all,
+        task_id=python_task_id,
+        start_index=python_start_index,
+        limit=take_n_each,
+    )
+    java_tasks = filter_tasks(
+        tasks=java_tasks_all,
+        task_id=java_task_id,
+        start_index=java_start_index,
+        limit=take_n_each,
+    )
+
+    pairs: List[Tuple[str, Dict[str, Any]]] = []
+    for task in python_tasks:
+        pairs.append(("python", task))
+    for task in java_tasks:
+        pairs.append(("java", task))
+    return pairs
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config()
 
-    input_json = Path(args.input_json or cfg.run.input_json_path)
     output_json = Path(args.output_json or cfg.run.output_json_path)
-    start_index = args.start_index if args.start_index is not None else cfg.run.start_index
-    limit = args.limit if args.limit is not None else cfg.run.task_limit
+    num_passes = args.num_passes if args.num_passes is not None else cfg.run.num_passes
 
-    all_tasks = load_tasks(input_json)
-    selected_tasks = filter_tasks(
-        tasks=all_tasks,
-        task_id=args.task_id,
-        start_index=start_index,
-        limit=limit,
-    )
+    if num_passes <= 0:
+        raise ValueError("num_passes must be >= 1")
 
     generator = BaselineGenerator(cfg)
     pipeline = BaselinePipeline(generator=generator)
 
-    print("=" * 100)
-    print("Baseline CoderEval runner")
-    print(f"input_json   : {input_json}")
-    print(f"output_json  : {output_json}")
-    print(f"task_id      : {args.task_id or '<batch>'}")
-    print(f"start_index  : {start_index}")
-    print(f"limit        : {limit}")
-    print(f"selected     : {len(selected_tasks)}")
-    print("=" * 100)
-
     new_results: List[Dict[str, Any]] = []
-    total = len(selected_tasks)
 
-    for i, raw_task in enumerate(selected_tasks, start=1):
-        task_id = get_task_id(raw_task)
-        print(f"[{i}/{total}] running task: {task_id}")
+    # ------------------------------------------------------------------
+    # Mode A: dual-language mode (python + java)
+    # ------------------------------------------------------------------
+    if args.python_json or args.java_json:
+        python_json = Path(args.python_json or cfg.run.python_input_json_path)
+        java_json = Path(args.java_json or cfg.run.java_input_json_path)
 
-        try:
-            result = pipeline.run_task_to_dict(raw_task)
-            new_results.append(result)
-            print(f"[OK] task={task_id}")
-        except Exception as exc:
-            print(f"[ERROR] task={task_id} error={exc}")
+        selected_items = build_dual_language_task_list(
+            python_json=python_json,
+            java_json=java_json,
+            python_task_id=args.python_task_id,
+            java_task_id=args.java_task_id,
+            python_start_index=args.python_start_index,
+            java_start_index=args.java_start_index,
+            take_n_each=args.take_n_each,
+        )
+
+        print("=" * 100)
+        print("Baseline CoderEval runner (dual-language mode)")
+        print(f"python_json    : {python_json}")
+        print(f"java_json      : {java_json}")
+        print(f"output_json    : {output_json}")
+        print(f"take_n_each    : {args.take_n_each}")
+        print(f"num_passes     : {num_passes}")
+        print(f"selected_total : {len(selected_items)}")
+        print("=" * 100)
+
+        total = len(selected_items)
+        for i, (lang, raw_task) in enumerate(selected_items, start=1):
+            task_id = get_task_id(raw_task)
+            print(f"[{i}/{total}] running {lang} task: {task_id}")
+
+            try:
+                result = run_task_passes(
+                    pipeline=pipeline,
+                    raw_task=raw_task,
+                    lang=lang,
+                    num_passes=num_passes,
+                )
+                new_results.append(result)
+                print(f"[OK] lang={lang} task={task_id}")
+            except Exception as exc:
+                print(f"[ERROR] lang={lang} task={task_id} error={exc}")
+
+    # ------------------------------------------------------------------
+    # Mode B: legacy single-file mode
+    # ------------------------------------------------------------------
+    else:
+        input_json = Path(args.input_json or cfg.run.input_json_path)
+        start_index = args.start_index if args.start_index is not None else cfg.run.start_index
+        limit = args.limit if args.limit is not None else cfg.run.task_limit
+
+        all_tasks = load_tasks(input_json)
+        selected_tasks = filter_tasks(
+            tasks=all_tasks,
+            task_id=args.task_id,
+            start_index=start_index,
+            limit=limit,
+        )
+        lang = detect_lang_from_path(input_json)
+
+        print("=" * 100)
+        print("Baseline CoderEval runner (single-file mode)")
+        print(f"input_json   : {input_json}")
+        print(f"output_json  : {output_json}")
+        print(f"task_id      : {args.task_id or '<batch>'}")
+        print(f"start_index  : {start_index}")
+        print(f"limit        : {limit}")
+        print(f"num_passes   : {num_passes}")
+        print(f"selected     : {len(selected_tasks)}")
+        print("=" * 100)
+
+        total = len(selected_tasks)
+        for i, raw_task in enumerate(selected_tasks, start=1):
+            task_id = get_task_id(raw_task)
+            print(f"[{i}/{total}] running {lang} task: {task_id}")
+
+            try:
+                result = run_task_passes(
+                    pipeline=pipeline,
+                    raw_task=raw_task,
+                    lang=lang,
+                    num_passes=num_passes,
+                )
+                new_results.append(result)
+                print(f"[OK] lang={lang} task={task_id}")
+            except Exception as exc:
+                print(f"[ERROR] lang={lang} task={task_id} error={exc}")
 
     if args.overwrite:
         final_results = new_results

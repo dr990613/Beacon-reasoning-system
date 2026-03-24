@@ -1,492 +1,869 @@
 # src/beacon_system/logic/rules_local.py
 # -*- coding: utf-8 -*-
+
 """
-rules_local.py
+Local Beacon Logic rules.
 
-Local Beacon Logic (MVP):
-- L-OUT: collect output-root nodes (Return / Yield / Print)
-- L-DEP: backward dependency closure from output expressions (best-effort, intra-function)
-- L-VAL: validation/guard filtering (early-exit branches -> forbidden)
-- L-RED: local reduction (drop trivial nodes; deterministic via stable criteria)
+Responsibilities:
+- work ONLY within function / method boundary
+- support Python and Java
+- implement local beacon extraction as:
+    1) observable output detection
+    2) backward dependency closure
+    3) heuristic validation filtering
+    4) reduction / normalization
 
-Interface:
-    apply_local(state: ReasoningState, func_key: FuncKey) -> None
+Non-goals:
+- no interprocedural propagation
+- no global beacon merging
+- no planner-like reasoning
 
-IMPORTANT:
-- This module is allowed to mutate ReasoningState only.
-- It must NOT output IR or Constraints directly.
+Input:
+- preprocessed dict from logic.preprocess.preprocess_task(...)
+- or any dict-like/object-like source that contains:
+    lang, body_text, file_content_text, class_level_text, target_name, target_signature
+
+Output:
+- a stable dict describing local beacons per function/method
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, asdict
 import ast
-from typing import Dict, List, Optional, Set, Tuple
-
-from .anchors import anchor_of, ast_kind, make_node_id, NodeID
-from .state import (
-    BeaconNode,
-    BeaconEdge,
-    EdgeKind,
-    FuncKey,
-    ProvenanceStep,
-    ReasoningState,
-    RuleName,
-)
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
-# ----------------------------
-# AST helpers (MVP)
-# ----------------------------
+# ============================================================
+# Small local contracts
+# ============================================================
 
-def _is_print_call(expr: ast.AST) -> bool:
-    return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "print"
+@dataclass
+class LocalBeaconNode:
+    node_id: str
+    function_name: str
+    line_no: int
+    kind: str
+    code: str
+    roles: List[str]
+    depends_on: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
-def _collect_names_and_attrs(expr: ast.AST) -> Tuple[Set[str], Set[str]]:
+@dataclass
+class LocalFunctionBeacon:
+    function_name: str
+    signature: Optional[str]
+    lang: str
+    output_node_ids: List[str]
+    beacon_node_ids: List[str]
+    filtered_validation_node_ids: List[str]
+    nodes: List[Dict[str, Any]]
+    warnings: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class LocalRulesResult:
+    lang: str
+    functions: List[Dict[str, Any]]
+    warnings: List[str]
+    debug: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ============================================================
+# Public API
+# ============================================================
+
+def build_local_beacons(preprocessed: Any) -> Dict[str, Any]:
     """
-    Collect Name ids and Attribute attrs used in an expression subtree.
+    Build local beacons for Python / Java source.
+
+    Expected input: result from preprocess.preprocess_task(...)
     """
-    names: Set[str] = set()
-    attrs: Set[str] = set()
-    for n in ast.walk(expr):
-        if isinstance(n, ast.Name):
-            names.add(n.id)
-        elif isinstance(n, ast.Attribute):
-            attrs.add(n.attr)
-    return names, attrs
+    data = _as_dict(preprocessed)
+    lang = str(data.get("lang", "unknown")).lower().strip()
+    body_text = _read_text(data, "body_text")
+    file_text = _read_text(data, "file_content_text")
+    class_level = _read_text(data, "class_level_text")
+    target_name = _read_optional_text(data, "target_name")
+    target_signature = _read_optional_text(data, "target_signature")
+
+    source = body_text or file_text or class_level
+    warnings: List[str] = []
+
+    if lang == "python":
+        functions, debug, extra_warnings = _build_local_python(
+            source=source,
+            target_name=target_name,
+            target_signature=target_signature,
+        )
+        warnings.extend(extra_warnings)
+    elif lang == "java":
+        functions, debug, extra_warnings = _build_local_java(
+            source=source,
+            class_level=class_level,
+            target_name=target_name,
+            target_signature=target_signature,
+        )
+        warnings.extend(extra_warnings)
+    else:
+        functions = []
+        debug = {"reason": "unsupported language"}
+        warnings.append(f"unsupported language '{lang}' in local rules")
+
+    return LocalRulesResult(
+        lang=lang,
+        functions=[f.to_dict() for f in functions],
+        warnings=warnings,
+        debug=debug,
+    ).to_dict()
 
 
-def _stmt_defines_name(stmt: ast.stmt) -> Set[str]:
-    """
-    Return set of variable names defined by a statement (MVP).
-    Covers: Assign, AnnAssign, AugAssign, For targets, With as targets.
-    """
-    defs: Set[str] = set()
+# ============================================================
+# Python local logic
+# ============================================================
 
-    def add_target(t: ast.AST) -> None:
-        if isinstance(t, ast.Name):
-            defs.add(t.id)
-        elif isinstance(t, (ast.Tuple, ast.List)):
-            for elt in t.elts:
-                add_target(elt)
+def _build_local_python(
+    source: str,
+    target_name: Optional[str],
+    target_signature: Optional[str],
+) -> Tuple[List[LocalFunctionBeacon], Dict[str, Any], List[str]]:
+    warnings: List[str] = []
 
-    if isinstance(stmt, ast.Assign):
-        for t in stmt.targets:
-            add_target(t)
-    elif isinstance(stmt, ast.AnnAssign):
-        add_target(stmt.target)
-    elif isinstance(stmt, ast.AugAssign):
-        add_target(stmt.target)
-    elif isinstance(stmt, ast.For):
-        add_target(stmt.target)
-    elif isinstance(stmt, ast.AsyncFor):
-        add_target(stmt.target)
-    elif isinstance(stmt, ast.With):
-        for item in stmt.items:
-            if item.optional_vars is not None:
-                add_target(item.optional_vars)
-    elif isinstance(stmt, ast.AsyncWith):
-        for item in stmt.items:
-            if item.optional_vars is not None:
-                add_target(item.optional_vars)
+    if not source.strip():
+        return [], {"python_parse": "empty_source"}, ["empty python source"]
 
-    return defs
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [], {"python_parse": "syntax_error", "detail": str(exc)}, [
+            "python source parse failed in local rules"
+        ]
 
+    lines = source.splitlines()
+    results: List[LocalFunctionBeacon] = []
 
-def _flatten_function_body(fn_node: ast.AST) -> List[ast.stmt]:
-    """
-    Flatten only the top-level body statements of a function (MVP).
-    We do not descend into nested defs/classes; we also keep If/For as single statements here.
-    """
-    body = getattr(fn_node, "body", None)
-    if not isinstance(body, list):
-        return []
-    out: List[ast.stmt] = []
-    for s in body:
-        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+    func_nodes = [
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+    if not func_nodes:
+        warnings.append("no python function found; local rules returned empty result")
+
+    for fn in func_nodes:
+        if target_name and fn.name != target_name:
+            # keep all functions if target_name absent; otherwise prefer exact target only
             continue
-        if isinstance(s, ast.stmt):
-            out.append(s)
+
+        index = _PythonFunctionIndex(fn=fn, source_lines=lines)
+        index.build()
+
+        signature = _python_signature_text(fn, lines)
+        if target_name and fn.name == target_name and target_signature:
+            signature = target_signature
+
+        output_ids = index.find_output_nodes()
+        beacon_ids = index.backward_closure(output_ids)
+        filtered_ids = index.filter_validation_nodes(beacon_ids, output_ids)
+        reduced_ids = index.reduce_nodes(filtered_ids)
+
+        nodes = [
+            index.to_beacon_node(nid).to_dict()
+            for nid in reduced_ids
+        ]
+
+        results.append(
+            LocalFunctionBeacon(
+                function_name=fn.name,
+                signature=signature,
+                lang="python",
+                output_node_ids=sorted(output_ids),
+                beacon_node_ids=sorted(reduced_ids),
+                filtered_validation_node_ids=sorted(set(beacon_ids) - set(filtered_ids)),
+                nodes=nodes,
+                warnings=index.warnings.copy(),
+            )
+        )
+
+    debug = {
+        "function_count": len(func_nodes),
+        "selected_count": len(results),
+    }
+    return results, debug, warnings
+
+
+class _PythonFunctionIndex:
+    """
+    Lightweight local dependence extractor for a Python function.
+
+    Strategy:
+    - one node per statement-level AST element
+    - build assignment/use index
+    - approximate backward data/control dependencies
+    """
+
+    def __init__(self, fn: ast.AST, source_lines: List[str]) -> None:
+        self.fn = fn
+        self.source_lines = source_lines
+
+        self.nodes_by_id: Dict[str, ast.AST] = {}
+        self.code_by_id: Dict[str, str] = {}
+        self.kind_by_id: Dict[str, str] = {}
+        self.roles_by_id: Dict[str, Set[str]] = {}
+        self.line_by_id: Dict[str, int] = {}
+        self.depends_on: Dict[str, Set[str]] = {}
+        self.var_def_line_to_node: Dict[int, str] = {}
+        self.latest_def_by_name: Dict[str, List[Tuple[int, str]]] = {}
+        self.control_stack_by_node: Dict[str, List[str]] = {}
+        self.warnings: List[str] = []
+
+    def build(self) -> None:
+        for node in ast.walk(self.fn):
+            if self._is_statement_like(node):
+                nid = self._node_id(node)
+                self.nodes_by_id[nid] = node
+                self.code_by_id[nid] = self._code_of(node)
+                self.kind_by_id[nid] = type(node).__name__.lower()
+                self.roles_by_id[nid] = set()
+                self.line_by_id[nid] = getattr(node, "lineno", -1)
+                self.depends_on[nid] = set()
+
+        self._walk_body_with_control(self.fn.body, active_controls=[])
+        self._build_data_dependencies()
+
+    def find_output_nodes(self) -> Set[str]:
+        outputs: Set[str] = set()
+        for nid, node in self.nodes_by_id.items():
+            if self._is_output_node(node):
+                outputs.add(nid)
+                self.roles_by_id[nid].add("output")
+        return outputs
+
+    def backward_closure(self, seed_ids: Set[str]) -> Set[str]:
+        visited = set(seed_ids)
+        worklist = list(seed_ids)
+
+        while worklist:
+            nid = worklist.pop()
+            for dep in sorted(self.depends_on.get(nid, set())):
+                if dep not in visited:
+                    visited.add(dep)
+                    worklist.append(dep)
+        return visited
+
+    def filter_validation_nodes(self, beacon_ids: Set[str], output_ids: Set[str]) -> Set[str]:
+        kept = set(beacon_ids)
+        for nid in list(beacon_ids):
+            node = self.nodes_by_id[nid]
+            if self._looks_like_validation(node):
+                # keep validation node if it is itself an observable output or direct return guard
+                if nid in output_ids:
+                    continue
+                kept.discard(nid)
+                self.roles_by_id[nid].add("validation_filtered")
+        return kept
+
+    def reduce_nodes(self, beacon_ids: Set[str]) -> List[str]:
+        """
+        Keep statement nodes only, remove duplicates by normalized code, sort by line.
+        """
+        ordered = sorted(beacon_ids, key=lambda x: (self.line_by_id.get(x, 10**9), x))
+        reduced: List[str] = []
+        seen_norm: Set[Tuple[int, str]] = set()
+
+        for nid in ordered:
+            code = self.code_by_id.get(nid, "").strip()
+            norm = _normalize_code(code)
+            key = (self.line_by_id.get(nid, -1), norm)
+            if key in seen_norm:
+                continue
+            seen_norm.add(key)
+            reduced.append(nid)
+        return reduced
+
+    def to_beacon_node(self, nid: str) -> LocalBeaconNode:
+        return LocalBeaconNode(
+            node_id=nid,
+            function_name=getattr(self.fn, "name", "<lambda>"),
+            line_no=self.line_by_id.get(nid, -1),
+            kind=self.kind_by_id.get(nid, "unknown"),
+            code=self.code_by_id.get(nid, ""),
+            roles=sorted(self.roles_by_id.get(nid, set())),
+            depends_on=sorted(self.depends_on.get(nid, set())),
+        )
+
+    # -------------------------
+    # build internals
+    # -------------------------
+
+    def _walk_body_with_control(self, body: List[ast.stmt], active_controls: List[str]) -> None:
+        for stmt in body:
+            if not self._is_statement_like(stmt):
+                continue
+
+            nid = self._node_id(stmt)
+            self.control_stack_by_node[nid] = list(active_controls)
+
+            for ctrl_id in active_controls:
+                self.depends_on[nid].add(ctrl_id)
+
+            if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith)):
+                self.roles_by_id[nid].add("control")
+
+            if self._is_definition_stmt(stmt):
+                defs = self._defined_names(stmt)
+                for name in defs:
+                    self.latest_def_by_name.setdefault(name, []).append((getattr(stmt, "lineno", -1), nid))
+                    self.roles_by_id[nid].add("definition")
+
+            if isinstance(stmt, ast.Return):
+                self.roles_by_id[nid].add("return")
+            if isinstance(stmt, ast.Raise):
+                self.roles_by_id[nid].add("raise")
+            if isinstance(stmt, ast.Expr) and self._is_call_expr(stmt):
+                self.roles_by_id[nid].add("call_stmt")
+
+            next_controls = active_controls
+            if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith)):
+                next_controls = active_controls + [nid]
+
+            if hasattr(stmt, "body") and isinstance(stmt.body, list):
+                self._walk_body_with_control(stmt.body, next_controls)
+            if hasattr(stmt, "orelse") and isinstance(stmt.orelse, list):
+                self._walk_body_with_control(stmt.orelse, next_controls)
+            if isinstance(stmt, ast.Try):
+                for h in stmt.handlers:
+                    self._walk_body_with_control(h.body, next_controls)
+                self._walk_body_with_control(stmt.finalbody, next_controls)
+
+    def _build_data_dependencies(self) -> None:
+        for nid, node in self.nodes_by_id.items():
+            used_names = self._used_names(node)
+            line_no = self.line_by_id.get(nid, -1)
+            for name in sorted(used_names):
+                defs = self.latest_def_by_name.get(name, [])
+                dep = self._latest_def_before(defs, line_no, exclude_id=nid)
+                if dep:
+                    self.depends_on[nid].add(dep)
+                    self.roles_by_id[nid].add("data_dependent")
+
+    # -------------------------
+    # heuristics
+    # -------------------------
+
+    def _is_output_node(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Return):
+            return True
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            name = _python_call_name(node.value)
+            if name in {"print", "logger.debug", "logger.info", "logger.warning", "logger.error", "log"}:
+                return True
+            if _looks_like_python_file_write(node.value):
+                return True
+        return False
+
+    def _looks_like_validation(self, node: ast.AST) -> bool:
+        # Axiom 3 / EC4 approximation:
+        # null checks, boundary guards, defensive early checks
+        if isinstance(node, ast.If):
+            text = self._code_of(node).lower()
+            patterns = [
+                " is none",
+                " is not none",
+                " not ",
+                "len(",
+                "== 0",
+                "< 0",
+                "<=",
+                ">=",
+                "assert",
+                "raise",
+            ]
+            return any(p in text for p in patterns)
+        if isinstance(node, ast.Assert):
+            return True
+        return False
+
+    # -------------------------
+    # utils
+    # -------------------------
+
+    def _node_id(self, node: ast.AST) -> str:
+        return f"py:{getattr(self.fn, 'name', '<fn>')}:{getattr(node, 'lineno', -1)}:{type(node).__name__}"
+
+    def _code_of(self, node: ast.AST) -> str:
+        try:
+            return ast.get_source_segment("\n".join(self.source_lines), node) or self._line_fallback(node)
+        except Exception:
+            return self._line_fallback(node)
+
+    def _line_fallback(self, node: ast.AST) -> str:
+        lineno = getattr(node, "lineno", None)
+        if lineno is None or lineno <= 0 or lineno > len(self.source_lines):
+            return type(node).__name__
+        return self.source_lines[lineno - 1].rstrip()
+
+    def _is_statement_like(self, node: ast.AST) -> bool:
+        return isinstance(
+            node,
+            (
+                ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return, ast.Raise,
+                ast.Expr, ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                ast.With, ast.AsyncWith, ast.Assert,
+            ),
+        )
+
+    def _is_definition_stmt(self, node: ast.AST) -> bool:
+        return isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+
+    def _defined_names(self, node: ast.AST) -> Set[str]:
+        names: Set[str] = set()
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+
+        for t in targets:
+            for child in ast.walk(t):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                    names.add(child.id)
+        return names
+
+    def _used_names(self, node: ast.AST) -> Set[str]:
+        names: Set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                names.add(child.id)
+        return names
+
+    def _latest_def_before(
+        self,
+        defs: List[Tuple[int, str]],
+        line_no: int,
+        exclude_id: str,
+    ) -> Optional[str]:
+        best: Optional[str] = None
+        best_line = -1
+        for d_line, d_id in defs:
+            if d_id == exclude_id:
+                continue
+            if d_line < line_no and d_line > best_line:
+                best_line = d_line
+                best = d_id
+        return best
+
+    def _is_call_expr(self, stmt: ast.Expr) -> bool:
+        return isinstance(stmt.value, ast.Call)
+
+
+def _python_signature_text(fn: ast.AST, lines: List[str]) -> str:
+    lineno = getattr(fn, "lineno", -1)
+    if 1 <= lineno <= len(lines):
+        return lines[lineno - 1].rstrip()
+    return getattr(fn, "name", "<function>")
+
+
+def _python_call_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        parts = []
+        cur = call.func
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return "<call>"
+
+
+def _looks_like_python_file_write(call: ast.Call) -> bool:
+    name = _python_call_name(call)
+    return name.endswith(".write") or name.endswith(".writelines")
+
+
+# ============================================================
+# Java local logic
+# ============================================================
+
+def _build_local_java(
+    source: str,
+    class_level: str,
+    target_name: Optional[str],
+    target_signature: Optional[str],
+) -> Tuple[List[LocalFunctionBeacon], Dict[str, Any], List[str]]:
+    """
+    Java local rules are heuristic, text-based, lightweight.
+
+    We do NOT attempt full Java parsing here.
+    We extract method blocks and apply local dependency approximation on lines.
+    """
+    warnings: List[str] = []
+
+    if not source.strip() and not class_level.strip():
+        return [], {"java_parse": "empty_source"}, ["empty java source"]
+
+    methods = _extract_java_method_blocks(source)
+    results: List[LocalFunctionBeacon] = []
+
+    if not methods and class_level.strip():
+        warnings.append("no java method block extracted from source")
+
+    for method_name, signature, start_line, block_lines in methods:
+        if target_name and method_name != target_name:
+            continue
+
+        if target_name and method_name == target_name and target_signature:
+            signature = target_signature
+
+        index = _JavaMethodIndex(
+            method_name=method_name,
+            signature=signature,
+            start_line=start_line,
+            block_lines=block_lines,
+        )
+        index.build()
+
+        output_ids = index.find_output_nodes()
+        beacon_ids = index.backward_closure(output_ids)
+        filtered_ids = index.filter_validation_nodes(beacon_ids, output_ids)
+        reduced_ids = index.reduce_nodes(filtered_ids)
+
+        nodes = [index.to_beacon_node(nid).to_dict() for nid in reduced_ids]
+
+        results.append(
+            LocalFunctionBeacon(
+                function_name=method_name,
+                signature=signature,
+                lang="java",
+                output_node_ids=sorted(output_ids),
+                beacon_node_ids=sorted(reduced_ids),
+                filtered_validation_node_ids=sorted(set(beacon_ids) - set(filtered_ids)),
+                nodes=nodes,
+                warnings=index.warnings.copy(),
+            )
+        )
+
+    debug = {
+        "method_count": len(methods),
+        "selected_count": len(results),
+    }
+    return results, debug, warnings
+
+
+class _JavaMethodIndex:
+    """
+    Lightweight line-based local dependence extractor for Java.
+
+    Statement unit:
+    - one normalized line in method block
+
+    Dependence approximation:
+    - variable definition/use backward linking
+    - control blocks linked conservatively
+    """
+
+    def __init__(self, method_name: str, signature: str, start_line: int, block_lines: List[str]) -> None:
+        self.method_name = method_name
+        self.signature = signature
+        self.start_line = start_line
+        self.block_lines = block_lines
+
+        self.code_by_id: Dict[str, str] = {}
+        self.line_by_id: Dict[str, int] = {}
+        self.kind_by_id: Dict[str, str] = {}
+        self.roles_by_id: Dict[str, Set[str]] = {}
+        self.depends_on: Dict[str, Set[str]] = {}
+        self.latest_def_by_name: Dict[str, List[Tuple[int, str]]] = {}
+        self.warnings: List[str] = []
+
+    def build(self) -> None:
+        for idx, raw in enumerate(self.block_lines, start=0):
+            code = raw.rstrip()
+            if not code.strip():
+                continue
+            abs_line = self.start_line + idx
+            nid = self._node_id(abs_line)
+            self.code_by_id[nid] = code
+            self.line_by_id[nid] = abs_line
+            self.kind_by_id[nid] = self._kind_of(code)
+            self.roles_by_id[nid] = set()
+            self.depends_on[nid] = set()
+
+            defs = _java_defined_names(code)
+            if defs:
+                self.roles_by_id[nid].add("definition")
+                for name in defs:
+                    self.latest_def_by_name.setdefault(name, []).append((abs_line, nid))
+
+        # data dependencies
+        for nid, code in self.code_by_id.items():
+            used = _java_used_names(code)
+            line_no = self.line_by_id[nid]
+            for name in sorted(used):
+                defs = self.latest_def_by_name.get(name, [])
+                dep = self._latest_def_before(defs, line_no, exclude_id=nid)
+                if dep:
+                    self.depends_on[nid].add(dep)
+                    self.roles_by_id[nid].add("data_dependent")
+
+        # conservative control dependency: if/for/while/try line affects following executable lines
+        control_stack: List[str] = []
+        brace_depth = 0
+        control_depth_entries: List[Tuple[int, str]] = []
+
+        for nid in sorted(self.code_by_id.keys(), key=lambda x: self.line_by_id[x]):
+            code = self.code_by_id[nid].strip()
+
+            # clear exited controls
+            current_depth = brace_depth
+            control_depth_entries = [item for item in control_depth_entries if item[0] <= current_depth]
+            for _, ctrl_id in control_depth_entries:
+                if ctrl_id != nid:
+                    self.depends_on[nid].add(ctrl_id)
+
+            if _looks_like_java_control(code):
+                self.roles_by_id[nid].add("control")
+                control_depth_entries.append((brace_depth + 1, nid))
+
+            brace_depth += code.count("{")
+            brace_depth -= code.count("}")
+
+    def find_output_nodes(self) -> Set[str]:
+        outputs: Set[str] = set()
+        for nid, code in self.code_by_id.items():
+            s = code.strip()
+            if s.startswith("return " ) or s == "return;" or s.startswith("throw "):
+                outputs.add(nid)
+                self.roles_by_id[nid].add("output")
+                continue
+            if "System.out.print" in s or "logger." in s:
+                outputs.add(nid)
+                self.roles_by_id[nid].add("output")
+                continue
+            if ".write(" in s or ".append(" in s:
+                outputs.add(nid)
+                self.roles_by_id[nid].add("output")
+        return outputs
+
+    def backward_closure(self, seed_ids: Set[str]) -> Set[str]:
+        visited = set(seed_ids)
+        worklist = list(seed_ids)
+
+        while worklist:
+            nid = worklist.pop()
+            for dep in sorted(self.depends_on.get(nid, set())):
+                if dep not in visited:
+                    visited.add(dep)
+                    worklist.append(dep)
+        return visited
+
+    def filter_validation_nodes(self, beacon_ids: Set[str], output_ids: Set[str]) -> Set[str]:
+        kept = set(beacon_ids)
+        for nid in list(beacon_ids):
+            code = self.code_by_id[nid].strip().lower()
+            if _looks_like_java_validation(code) and nid not in output_ids:
+                kept.discard(nid)
+                self.roles_by_id[nid].add("validation_filtered")
+        return kept
+
+    def reduce_nodes(self, beacon_ids: Set[str]) -> List[str]:
+        ordered = sorted(beacon_ids, key=lambda x: (self.line_by_id.get(x, 10**9), x))
+        reduced: List[str] = []
+        seen_norm: Set[Tuple[int, str]] = set()
+
+        for nid in ordered:
+            code = self.code_by_id[nid].strip()
+            norm = _normalize_code(code)
+            key = (self.line_by_id.get(nid, -1), norm)
+            if key in seen_norm:
+                continue
+            seen_norm.add(key)
+            reduced.append(nid)
+        return reduced
+
+    def to_beacon_node(self, nid: str) -> LocalBeaconNode:
+        return LocalBeaconNode(
+            node_id=nid,
+            function_name=self.method_name,
+            line_no=self.line_by_id.get(nid, -1),
+            kind=self.kind_by_id.get(nid, "unknown"),
+            code=self.code_by_id.get(nid, ""),
+            roles=sorted(self.roles_by_id.get(nid, set())),
+            depends_on=sorted(self.depends_on.get(nid, set())),
+        )
+
+    def _node_id(self, abs_line: int) -> str:
+        return f"java:{self.method_name}:{abs_line}"
+
+    def _kind_of(self, code: str) -> str:
+        s = code.strip()
+        if s.startswith("return"):
+            return "return"
+        if s.startswith("throw"):
+            return "throw"
+        if s.startswith("if"):
+            return "if"
+        if s.startswith("for"):
+            return "for"
+        if s.startswith("while"):
+            return "while"
+        if s.startswith("try"):
+            return "try"
+        if "=" in s:
+            return "assign"
+        if "(" in s and ")" in s:
+            return "call_or_expr"
+        return "stmt"
+
+    def _latest_def_before(
+        self,
+        defs: List[Tuple[int, str]],
+        line_no: int,
+        exclude_id: str,
+    ) -> Optional[str]:
+        best: Optional[str] = None
+        best_line = -1
+        for d_line, d_id in defs:
+            if d_id == exclude_id:
+                continue
+            if d_line < line_no and d_line > best_line:
+                best_line = d_line
+                best = d_id
+        return best
+
+
+def _extract_java_method_blocks(source: str) -> List[Tuple[str, str, int, List[str]]]:
+    """
+    Very lightweight brace-based Java method extraction.
+    Returns:
+        [(method_name, signature_line, start_line, block_lines), ...]
+    """
+    lines = source.splitlines()
+    results: List[Tuple[str, str, int, List[str]]] = []
+
+    method_sig_re = re.compile(
+        r'^\s*(?:public|protected|private|static|final|native|synchronized|abstract|default|strictfp|\s)+'
+        r'.*?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:throws\s+[^{]+)?\{?\s*$'
+    )
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = method_sig_re.match(line)
+        if not m:
+            i += 1
+            continue
+
+        method_name = m.group(1)
+        signature = line.rstrip()
+
+        # find opening brace
+        brace_line = i
+        while brace_line < len(lines) and "{" not in lines[brace_line]:
+            brace_line += 1
+        if brace_line >= len(lines):
+            i += 1
+            continue
+
+        depth = 0
+        block_start = brace_line
+        block_end = brace_line
+
+        for j in range(brace_line, len(lines)):
+            depth += lines[j].count("{")
+            depth -= lines[j].count("}")
+            if depth == 0:
+                block_end = j
+                break
+
+        block_lines = lines[block_start:block_end + 1]
+        results.append((method_name, signature, block_start + 1, block_lines))
+        i = block_end + 1
+
+    return results
+
+
+def _java_defined_names(code: str) -> Set[str]:
+    out: Set[str] = set()
+    # examples:
+    # int x = ...
+    # String name = ...
+    # x = ...
+    m = re.match(r'^\s*(?:[A-Za-z_<>\[\]]+\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*=', code)
+    if m:
+        out.add(m.group(1))
+    m2 = re.match(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=', code)
+    if m2:
+        out.add(m2.group(1))
     return out
 
 
-def _make_stmt_node(state: ReasoningState, stmt: ast.AST, file: str, qualname: str) -> BeaconNode:
-    anch = anchor_of(stmt, file=file, qualname=qualname)
-    kind = ast_kind(stmt)
-    idx = state.next_local_index(anch, kind)
-    nid = make_node_id(anch, kind, idx)
-    return BeaconNode(node_id=nid, anchor=anch, kind=kind, code=None, meta={})
+def _java_used_names(code: str) -> Set[str]:
+    tokens = set(re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', code))
+    blacklist = {
+        "return", "throw", "if", "else", "for", "while", "try", "catch", "finally",
+        "new", "null", "true", "false", "public", "private", "protected", "static",
+        "final", "class", "interface", "enum", "void", "int", "long", "double",
+        "float", "boolean", "char", "byte", "short", "String", "System", "out",
+    }
+    return {t for t in tokens if t not in blacklist}
 
 
-def _make_expr_node(state: ReasoningState, expr: ast.AST, file: str, qualname: str, *, meta: Optional[dict] = None) -> BeaconNode:
-    anch = anchor_of(expr, file=file, qualname=qualname)
-    kind = ast_kind(expr)
-    idx = state.next_local_index(anch, kind)
-    nid = make_node_id(anch, kind, idx)
-    return BeaconNode(node_id=nid, anchor=anch, kind=kind, code=None, meta=meta or {})
+def _looks_like_java_control(code: str) -> bool:
+    s = code.strip()
+    return s.startswith(("if ", "if(", "for ", "for(", "while ", "while(", "try", "switch"))
 
 
-def _parse_funckey(key: FuncKey) -> Tuple[str, str]:
-    s = str(key)
-    if "::" not in s:
-        return ("", s)
-    file, qual = s.split("::", 1)
-    return file, qual
+def _looks_like_java_validation(code: str) -> bool:
+    patterns = [
+        "== null", "!= null", "isempty()", "length == 0", "size() == 0",
+        "< 0", "<=", ">=", "throw new illegalargumentexception",
+        "throw new nullpointerexception", "assert",
+    ]
+    return any(p in code for p in patterns)
 
 
-import ast
-from typing import Optional, Tuple
+# ============================================================
+# Shared helpers
+# ============================================================
 
-def _extract_assign_from_call(stmt: ast.stmt) -> Optional[Tuple[str, str]]:
-    """
-    If stmt matches:
-      - x = foo(...)
-      - x: T = foo(...)
-    return (var, call_name). Otherwise None.
-    """
-    def call_name_of(call: ast.Call) -> Optional[str]:
-        if isinstance(call.func, ast.Name):
-            return call.func.id
-        if isinstance(call.func, ast.Attribute):
-            return call.func.attr
+def _as_dict(obj: Any) -> Dict[str, Any]:
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
+    return {"value": obj}
+
+
+def _read_text(data: Dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    return value if isinstance(value, str) else str(value or "")
+
+
+def _read_optional_text(data: Dict[str, Any], key: str) -> Optional[str]:
+    value = data.get(key)
+    if value is None:
         return None
-
-    # x = foo(...)
-    if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
-        if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-            cn = call_name_of(stmt.value)
-            if cn:
-                return (stmt.targets[0].id, cn)
-
-    # x: T = foo(...)
-    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.value, ast.Call):
-        if isinstance(stmt.target, ast.Name):
-            cn = call_name_of(stmt.value)
-            if cn:
-                return (stmt.target.id, cn)
-
-    return None
+    value = str(value).strip()
+    return value or None
 
 
-def _set_node_meta_assign_from_call(
-    state: "ReasoningState",
-    node_id: "NodeID",
-    var: str,
-    call_name: str,
-) -> None:
-    """
-    BeaconNode is frozen; overwrite node with updated meta.
-    """
-    node = state.get_node(node_id)
-    if node is None:
-        return
-    new_meta = dict(node.meta)
-    new_meta["assign_from_call"] = {"var": var, "call_name": call_name}
-    # keep any existing meta keys
-    new_node = BeaconNode(
-        node_id=node.node_id,
-        anchor=node.anchor,
-        kind=node.kind,
-        code=node.code,
-        meta=new_meta,
-    )
-    state.add_node(
-        new_node,
-        prov=ProvenanceStep(rule=RuleName.L_DEP, note="assign_from_call_meta"),
-        overwrite=True,
-    )
-
-# ----------------------------
-# L-OUT
-# ----------------------------
-
-def _apply_l_out(state: ReasoningState, fn_node: ast.AST, file: str, qualname: str) -> List[NodeID]:
-    """
-    Add output-root nodes: Return / Yield / print(...) statement expression.
-    Returns list of node_ids added/seen as output roots.
-    """
-    out_ids: List[NodeID] = []
-
-    # Walk within function body
-    for n in ast.walk(fn_node):
-        # Ignore nested functions/classes
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not fn_node:
-            continue
-
-        if isinstance(n, ast.Return):
-            bn = _make_stmt_node(state, n, file, qualname)
-            state.add_node(bn, prov=ProvenanceStep(rule=RuleName.L_OUT, note="return"))
-            out_ids.append(bn.node_id)
-
-        elif isinstance(n, ast.Yield) or isinstance(n, ast.YieldFrom):
-            bn = _make_expr_node(state, n, file, qualname, meta={"output": "yield"})
-            state.add_node(bn, prov=ProvenanceStep(rule=RuleName.L_OUT, note="yield"))
-            out_ids.append(bn.node_id)
-
-        elif isinstance(n, ast.Expr) and _is_print_call(n.value):
-            bn = _make_stmt_node(state, n, file, qualname)
-            bn2 = BeaconNode(
-                node_id=bn.node_id,
-                anchor=bn.anchor,
-                kind=bn.kind,
-                code=bn.code,
-                meta={"output": "print"},
-            )
-            state.add_node(bn2, prov=ProvenanceStep(rule=RuleName.L_OUT, note="print"), overwrite=True)
-            out_ids.append(bn2.node_id)
-
-    return out_ids
-
-
-# ----------------------------
-# L-DEP (best-effort backward closure)
-# ----------------------------
-
-def _apply_l_dep(
-    state: ReasoningState,
-    fn_node: ast.AST,
-    file: str,
-    qualname: str,
-    output_node_ids: List[NodeID],
-) -> None:
-    """
-    Backward dependency closure:
-    - collect names used in output expressions
-    - find nearest definitions in top-level body (reverse scan)
-    - add defining statements as beacon nodes; add DATA edges from def->output
-    - iteratively expand: if defining stmt uses other names, keep expanding
-    """
-    body = _flatten_function_body(fn_node)
-    if not body:
-        return
-
-    # Build a quick map from stmt index -> defined names
-    defines: List[Set[str]] = [_stmt_defines_name(s) for s in body]
-
-    # Helper to get expression corresponding to an output node (best-effort)
-    # We re-scan AST because NodeID->AST mapping isn't in MVP yet.
-    # Later: keep a NodeID->AST pointer map in ReasoningState.
-    output_exprs: List[ast.AST] = []
-    for n in ast.walk(fn_node):
-        if isinstance(n, ast.Return) and n.value is not None:
-            output_exprs.append(n.value)
-        elif isinstance(n, (ast.Yield, ast.YieldFrom)) and getattr(n, "value", None) is not None:
-            output_exprs.append(n.value)
-        elif isinstance(n, ast.Expr) and _is_print_call(n.value):
-            # print(args...) -> treat args as outputs
-            for arg in n.value.args:
-                output_exprs.append(arg)
-
-    seed_names: Set[str] = set()
-    seed_attrs: Set[str] = set()
-    for expr in output_exprs:
-        names, attrs = _collect_names_and_attrs(expr)
-        seed_names |= names
-        seed_attrs |= attrs
-
-    # Record attributes as symbols (MVP)
-    state.symbols.attrs |= seed_attrs
-
-    # Iterative expansion queue
-    needed: Set[str] = set(seed_names)
-    resolved: Set[str] = set()
-
-    # For determinism, we loop until no progress; resolution uses reverse scan each time
-    while True:
-        progress = False
-        unresolved = sorted([n for n in needed if n not in resolved])
-        if not unresolved:
-            break
-
-        for name in unresolved:
-            # Find nearest definition by scanning body backwards
-            def_stmt = None
-            def_idx = None
-            for i in range(len(body) - 1, -1, -1):
-                if name in defines[i]:
-                    def_stmt = body[i]
-                    def_idx = i
-                    break
-            if def_stmt is None:
-                # treat as global / free var
-                state.symbols.globals.add(name)
-                resolved.add(name)
-                continue
-
-            # Add beacon node for definition statement
-            def_node = _make_stmt_node(state, def_stmt, file, qualname)
-            state.add_node(def_node, prov=ProvenanceStep(rule=RuleName.L_DEP, note=f"define:{name}"))
-
-            afc = _extract_assign_from_call(def_stmt)
-            if afc is not None:
-                var, call_name = afc
-                # Only tag if it matches the variable we are currently resolving (keeps it precise)
-                if var == name:
-                    _set_node_meta_assign_from_call(state, def_node.node_id, var=var, call_name=call_name)
-                    # Ensure symbol table calls contains it (deterministic, idempotent)
-                    state.symbols.calls.add(call_name)
-
-            # Add DATA edges from def_node -> each output root (MVP)
-            for out_id in output_node_ids:
-                edge = BeaconEdge(src=def_node.node_id, dst=out_id, kind=EdgeKind.DATA, meta={"var": name})
-                state.add_edge(edge, prov=ProvenanceStep(rule=RuleName.L_DEP, src=def_node.node_id, note="dep_to_output"))
-
-            # Expand dependencies from the RHS / stmt subtree
-            # We approximate by collecting Name/Attribute in the defining statement.
-            rhs_names: Set[str] = set()
-            rhs_attrs: Set[str] = set()
-            for sub in ast.walk(def_stmt):
-                if isinstance(sub, ast.Name):
-                    rhs_names.add(sub.id)
-                elif isinstance(sub, ast.Attribute):
-                    rhs_attrs.add(sub.attr)
-                elif isinstance(sub, ast.Call):
-                    # record calls for potential global reasoning
-                    if isinstance(sub.func, ast.Name):
-                        state.symbols.calls.add(sub.func.id)
-                    elif isinstance(sub.func, ast.Attribute):
-                        state.symbols.calls.add(sub.func.attr)
-
-            # Remove the defined name itself to avoid self-loop
-            rhs_names.discard(name)
-
-            # Update symbol table and needed set
-            state.symbols.attrs |= rhs_attrs
-            before = len(needed)
-            needed |= rhs_names
-            if len(needed) != before:
-                progress = True
-
-            resolved.add(name)
-
-        if not progress:
-            break
-
-
-# ----------------------------
-# L-VAL (validation / guard filtering)
-# ----------------------------
-
-def _is_early_exit_if(stmt: ast.If) -> bool:
-    """
-    MVP early-exit guard detection:
-    - if <cond>: return ...
-    - if <cond>: raise ...
-    - if not <x>: return/raise
-    - if x is None: return/raise
-    We treat any If whose body contains Return/Raise and has no else (or empty else) as guard.
-    """
-    has_exit = any(isinstance(s, (ast.Return, ast.Raise)) for s in stmt.body)
-    if not has_exit:
-        return False
-    if stmt.orelse:
-        # If there's a meaningful else, we avoid classifying as simple guard in MVP
-        # (later can refine)
-        return False
-    # Accept simple patterns
-    return True
-
-
-def _apply_l_val(state: ReasoningState, fn_node: ast.AST, file: str, qualname: str) -> None:
-    """
-    Mark nodes inside early-exit guards as forbidden.
-
-    MVP:
-    - Find If nodes meeting _is_early_exit_if
-    - For each stmt in its body, create/find beacon node and mark forbidden
-    - Optionally keep them in state.nodes but record forbidden set (preferred)
-    """
-    for n in ast.walk(fn_node):
-        if isinstance(n, ast.If) and _is_early_exit_if(n):
-            # Mark the If node itself as forbidden context
-            if_node = _make_stmt_node(state, n, file, qualname)
-            state.add_node(if_node, prov=ProvenanceStep(rule=RuleName.L_VAL, note="guard_if"))
-            state.mark_forbidden(if_node.node_id, prov=ProvenanceStep(rule=RuleName.L_VAL, note="forbidden_if"))
-
-            for s in n.body:
-                if not isinstance(s, ast.stmt):
-                    continue
-                bn = _make_stmt_node(state, s, file, qualname)
-                state.add_node(bn, prov=ProvenanceStep(rule=RuleName.L_VAL, src=if_node.node_id, note="guard_body"))
-                state.mark_forbidden(bn.node_id, prov=ProvenanceStep(rule=RuleName.L_VAL, src=if_node.node_id, note="forbidden_guard_body"))
-
-
-# ----------------------------
-# L-RED (reduction)
-# ----------------------------
-
-def _is_trivial_stmt(stmt: ast.stmt) -> bool:
-    """
-    MVP triviality:
-    - Pass
-    - Expr(Constant) docstring-like or standalone literal
-    """
-    if isinstance(stmt, ast.Pass):
-        return True
-    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-        return True
-    return False
-
-
-def _apply_l_red(state: ReasoningState, file: str, qualname: str) -> None:
-    """
-    Deterministic local reduction:
-    - Drop trivial nodes of the target function scope (Pass, Expr(Constant))
-    - Keep forbidden nodes (still meaningful for verifier), but you may choose to drop them later in normalize/reduce.
-    """
-    to_drop: List[NodeID] = []
-    for nid, node in state.nodes.items():
-        if node.anchor.file != file or node.anchor.qualname != qualname:
-            continue
-        # Only attempt to classify statement kinds we know
-        if node.kind == "Pass":
-            to_drop.append(nid)
-        elif node.kind == "Expr":
-            # best effort: if meta indicates output=print keep; else drop as trivial constant expr
-            if node.meta.get("output") == "print":
-                continue
-            # We cannot inspect original AST here; conservative drop for Expr w/o meta
-            to_drop.append(nid)
-
-    # Deterministic deletion order
-    for nid in sorted(to_drop, key=str):
-        # Do not drop if it's an output root or forbidden marker? MVP: keep forbidden, drop trivial regardless.
-        # If you prefer: if nid in state.forbidden: continue
-        state.nodes.pop(nid, None)
-        # Remove from forbidden set if dropped
-        state.forbidden.discard(nid)
-
-    # Also prune edges that became hanging (do not do full normalize here; normalize.py will prune)
-    state.edges = {e for e in state.edges if (e.src in state.nodes and e.dst in state.nodes)}
-
-
-# ----------------------------
-# Public API
-# ----------------------------
-
-def apply_local(state: ReasoningState, func_key: FuncKey) -> None:
-    """
-    Apply local reasoning rules in the fixed order:
-        L-OUT -> L-DEP -> L-VAL (optional) -> L-RED
-
-    This function is idempotent-ish for MVP: repeated calls will add nodes with new local_index
-    if you rebuild anchors each time. In practice engine should call apply_local once per function.
-    """
-    fn_node = state.ast_index.get_function(func_key)
-    if fn_node is None:
-        return
-
-    file, qualname = _parse_funckey(func_key)
-
-    # L-OUT
-    output_ids = _apply_l_out(state, fn_node, file, qualname)
-
-    # L-DEP
-    _apply_l_dep(state, fn_node, file, qualname, output_ids)
-
-    # L-VAL
-    if state.config.validation_filter:
-        _apply_l_val(state, fn_node, file, qualname)
-
-    # L-RED
-    _apply_l_red(state, file, qualname)
+def _normalize_code(code: str) -> str:
+    return re.sub(r"\s+", " ", code.strip())

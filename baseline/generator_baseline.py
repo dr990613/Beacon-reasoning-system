@@ -64,21 +64,25 @@ class BaselineGenerator:
         )
 
     def _build_user_prompt(self, task: CodeEvalTask) -> str:
-        """
-        Assemble a stable user prompt.
-        Keep it simple: task content first, output constraint second.
-        """
+        lang = (getattr(task, "lang", None) or "").strip().lower()
+
+        if lang == "java":
+            lang_name = "Java"
+        elif lang == "python":
+            lang_name = "Python"
+        else:
+            lang_name = "the required language"
+
         parts = [
             task.prompt.strip(),
             "",
             "Requirements:",
-            "1. Output only Python code.",
+            f"1. Output only {lang_name} code.",
             "2. Do not include markdown fences.",
-            "3. Do not include explanations or comments outside the code.",
-            "4. Keep the implementation complete and runnable when possible.",
+            "3. Do not include explanations or text outside the code.",
+            "4. Keep the implementation complete and consistent with the task.",
         ]
         return "\n".join(parts).strip()
-
     def call_model(self, request: ModelRequest) -> ModelResponse:
         """
         Call the chat model and normalize the result.
@@ -123,15 +127,21 @@ class BaselineGenerator:
         raise ValueError(f"Failed to generate valid code for task={task.task_id}: {last_error}")
 
     def _build_retry_request(self, task: CodeEvalTask, previous_output: str) -> ModelRequest:
-        """
-        Stronger retry prompt when first output is not code-only.
-        """
+        lang = (getattr(task, "lang", None) or "").strip().lower()
+
+        if lang == "java":
+            lang_name = "Java"
+        elif lang == "python":
+            lang_name = "Python"
+        else:
+            lang_name = "the required language"
+
         retry_user_prompt = "\n".join(
             [
                 task.prompt.strip(),
                 "",
                 "Your previous answer was rejected because it was not pure code.",
-                "Now return ONLY the final Python code.",
+                f"Now return ONLY the final {lang_name} code.",
                 "Do not include explanations.",
                 "Do not include markdown fences.",
                 "Do not include any text before or after the code.",
@@ -140,6 +150,13 @@ class BaselineGenerator:
                 previous_output.strip() or "<empty>",
             ]
         ).strip()
+
+        return ModelRequest(
+            system_prompt=self.config.generation.system_prompt,
+            user_prompt=retry_user_prompt,
+            temperature=self.config.model.temperature,
+            max_tokens=self.config.model.max_tokens,
+        )
 
         return ModelRequest(
             system_prompt=self.config.generation.system_prompt,

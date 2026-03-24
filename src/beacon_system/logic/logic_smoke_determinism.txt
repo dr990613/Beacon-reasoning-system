@@ -1,4 +1,0 @@
-IR deterministic: True
-Constraints deterministic: True
-
-If false, inspect stable_json diffs between runs.
